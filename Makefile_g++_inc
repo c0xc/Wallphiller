@@ -1,0 +1,26 @@
+# COMPILER
+
+CC=g++
+LD=$(CC)
+
+CFLAGS+=-c
+CFLAGS+=-I $(INCDIR)
+CFLAGS+=-Wall
+CFLAGS+=-Werror
+CFLAGS+=-g
+
+CFLAGS+="-DCOMPILED_ON=\"`uname -a`\""
+
+CFLAGS_QT=-I /usr/include/QtGui
+CFLAGS_QT+=-I /usr/include/QtCore
+
+# LINKER
+
+LDFLAGS_QT=-lQtGui -lQtCore
+LDFLAGS_QT_STATIC=-lXext -lX11 -pthread -lrt -lgobject-2.0 -lgthread-2.0 -lglib-2.0 -ldl -lz -lpng12 -lXft -lfreetype -lSM -lICE -lXrender -lfontconfig -ljpeg
+MOC=moc-qt4
+
+# MISC
+
+CMD_VERSION=cp $(VERSIONFILE0) $(VERSIONFILE)
+

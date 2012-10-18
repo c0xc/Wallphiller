@@ -1,0 +1,41 @@
+# COMPILER
+
+CC=cl
+LD=link
+
+CC_OPT_O=/Fo
+LD_OPT_O=/OUT:
+
+# http://msdn.microsoft.com/en-us/library/fwkeyyhe%28v=vs.71%29.aspx
+CFLAGS+=-c
+CFLAGS+=-Wall
+CFLAGS+=-I $(INCDIR)
+CFLAGS+=/Zc:wchar_t-
+
+#CFLAGS+="-DCOMPILED_ON=\"`uname -a`\"" #??
+
+#QT_BASEDIR=D:\Qt\4.8.1
+QT_BASEDIR=%QTDIR_MSVC2008%
+CFLAGS_QT+=-I $(QT_BASEDIR)\include
+CFLAGS_QT+=-I $(QT_BASEDIR)\include\QtGui
+CFLAGS_QT+=-I $(QT_BASEDIR)\include\QtCore
+
+CFLAGS_BOOST=-DDISABLE_BOOST
+#CFLAGS_BOOST=-I "D:\Program Files\CodeBlocks\include\boost-1_47"
+
+# LINKER
+
+LDFLAGS_QT="$(QT_BASEDIR)\lib\*.lib"
+LDFLAGS_QT_STATIC=-static
+MOC="$(QT_BASEDIR)\bin\moc.exe"
+
+# MISC
+
+CMD_VERSION=copy $(VERSIONFILE0) $(VERSIONFILE)
+
+EXECUTABLE=$(BINDIR)\$(PROGRAM).exe
+
+CMD_CLEAN=-del "$(OBJDIR)\*.o" "$(OBJDIR)\*.obj" "$(SRCDIR)\*.moc.cpp"
+
+CMD_CLEAN_MOC=-del "$(SRCDIR)\*.moc.cpp"
+

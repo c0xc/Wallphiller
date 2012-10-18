@@ -1,0 +1,6 @@
+VERSION
+inc/version.hpp
+
+obj/
+bin/
+

@@ -1,0 +1,19 @@
+WALLPHILLER
+===========
+
+A platform-independent tool for rotating desktop wallpapers.
+Works on Gnome, Fluxbox and Windows.
+
+Default build:
+make
+
+Windows build:
+make PLATFORM=win32-g++
+
+
+
+---
+
+Philip Seeger
+philip@philip-seeger.de
+

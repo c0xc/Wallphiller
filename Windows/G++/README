@@ -1,0 +1,33 @@
+REQUIREMENTS
+============
+
+GCC/MinGW (mingw-utils: reimp.exe)
+make
+Qt 4.8.2
+MySQL
+
+
+
+BUILD
+=====
+
+make PLATFORM=win32-g++
+
+
+
+MYSQL
+=====
+
+
+
+http://doc.qt.nokia.com/4.7-snapshot/sql-driver.html#qmysql
+http://www.qtcentre.org/threads/51137-SOLVED-How-to-use-MySQL-in-Qt-plugin-not-recognized-quot-module-could-not-be-found-quot?p=229408#post229408
+
+cd D:\Qt\4.8.2-GCC\src\plugins\sqldrivers\mysql
+qmake "INCLUDEPATH+=D:/MySQL/MySQL55/MySQL_Server_5.5/include" "LIBS+=-LD:/MySQL/MySQL55/MySQL_Server_5.5/lib" mysql.pro
+make release
+
+QT_DEBUG_PLUGINS=1
+
+
+

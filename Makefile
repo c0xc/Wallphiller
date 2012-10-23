@@ -4,6 +4,7 @@ SRCDIR=src
 INCDIR=inc
 OBJDIR=obj
 BINDIR=bin
+SUBDIR=sub
 
 CC_OPT_O=-o 
 LD_OPT_O=$(CC_OPT_O)

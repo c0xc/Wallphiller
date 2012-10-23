@@ -18,9 +18,6 @@ include Makefile_$(PLATFORM)_inc
 
 CFLAGS+="-DPROGRAM=\"$(PROGRAM)\""
 
-CFLAGS_YESQT=-DENABLE_QT
-CFLAGS_NOQT=-DDISABLE_QT
-
 CFLAGS+=$(CFLAGS_QT)
 CFLAGS+=$(ADDCFLAGS)
 
@@ -41,15 +38,9 @@ rebuild: clean compile link clean-moc
 
 build: compile link
 
-rebuild-noqt: clean compile-noqt link-noqt
+build-static: compile-static link-static
 
-build-noqt: compile-noqt link-noqt
-
-compile: CFLAGS_SPECIAL=$(CFLAGS_YESQT)
 compile: $(OBJDIR) $(OBJECTS) $(OBJECTS_QT) $(VERSIONFILE)
-
-compile-noqt: CFLAGS_SPECIAL=$(CFLAGS_NOQT)
-compile-noqt: $(OBJDIR) $(OBJECTS)
 
 $(OBJDIR):
 	mkdir $@
@@ -58,7 +49,7 @@ $(BINDIR):
 	mkdir $@
 
 $(OBJDIR)/%.obj: $(SRCDIR)/%.cpp
-	$(CC) $(CFLAGS) $(CFLAGS_SPECIAL) $< $(CC_OPT_O)$@
+	$(CC) $(CFLAGS) $< $(CC_OPT_O)$@
 
 $(SRCDIR)/%.moc.cpp: $(INCDIR)/%.hpp
 	$(MOC) $< -o $@
@@ -73,11 +64,8 @@ $(EXECUTABLE): link
 link: $(BINDIR) $(OBJECTS) $(OBJECTS_QT)
 	$(LD) $(OBJECTS) $(OBJECTS_QT) $(LDFLAGS) $(LDFLAGS_QT) $(LD_OPT_O)$(EXECUTABLE)
 
-link-noqt: $(BINDIR) $(OBJECTS)
-	$(LD) $(OBJECTS) $(LDFLAGS) $(CC_OPT_O)$(EXECUTABLE)
-
 link-static: $(OBJECTS) $(OBJECTS_QT)
-	$(LD) $(OBJECTS) $(OBJECTS_QT) $(LDFLAGS) $(LDFLAGS_QT) $(LDFLAGS_QT_STATIC) $(CC_OPT_O)$(EXECUTABLE)
+	$(LD) $(OBJECTS) $(OBJECTS_QT) $(LDFLAGS) $(LDFLAGS_QT_STATIC) $(CC_OPT_O)$(EXECUTABLE)
 
 clean:
 ifeq ($(CMD_CLEAN),)
@@ -104,6 +92,9 @@ list-objects-qt:
 
 show-executable:
 	@echo $(EXECUTABLE)
+
+show-cflags:
+	@echo $(CFLAGS)
 
 show-qtdir:
 	@echo $(QTDIR)

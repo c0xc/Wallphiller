@@ -1,6 +1,12 @@
 #define DEFINE_GLOBALS
 #include "wallphiller.hpp"
 
+
+
+//---
+
+
+
 PreviewLabel::PreviewLabel(QWidget *parent)
             : QLabel(parent)
 {
@@ -11,6 +17,12 @@ PreviewLabel::resizeEvent(QResizeEvent *event)
 {
     emit resized();
 }
+
+
+
+//---
+
+
 
 QString
 Wallphiller::wallpaperSetterInfo()
@@ -95,6 +107,12 @@ Wallphiller::setWallpaper(QString file)
 
 }
 
+
+
+//---
+
+
+
 Wallphiller* Wallphiller::instanceptr = 0;
 
 Wallphiller::Wallphiller()
@@ -114,7 +132,7 @@ Wallphiller::Wallphiller()
     QCoreApplication::setApplicationVersion(GITVERSION);
     QSettings::setDefaultFormat(QSettings::IniFormat);
 
-    if (QSettings().contains("PID2ndInstance")) //2nd instance already running (?)
+    if (QSettings().contains("PID2ndInstance")) //2nd instance?
     {
         if (QMessageBox::critical(this,
             tr("Multiple instances"),
@@ -189,6 +207,12 @@ Wallphiller::Wallphiller()
     //Playlist
 
     splitter = new QSplitter(Qt::Vertical);
+    splitter->setChildrenCollapsible(false);
+    scrollarea = new QScrollArea;
+    scrollarea->setWidgetResizable(true);
+    scrollarea->setFrameStyle(0);
+    scrollarea->setLineWidth(0);
+    scrollarea->setWidget(splitter);
 
     playlist_box = new QGroupBox(tr("Playlists"));
     vbox = new QVBoxLayout;
@@ -215,13 +239,14 @@ Wallphiller::Wallphiller()
     hline->setFrameShape(QFrame::HLine);
     //hline->setFrameStyle(QFrame::Sunken);
     vbox->addWidget(hline);
-    vbox->addWidget(splitter);
+    vbox->addWidget(scrollarea);
     playlist_box->setLayout(vbox);
 
     contents_box = new QGroupBox(tr("Contents"));
     vbox = new QVBoxLayout;
     contents_model = new QStringListModel(this);
     contents_list = new QListView;
+    contents_list->setEditTriggers(QAbstractItemView::NoEditTriggers);
     contents_list->setModel(contents_model);
     vbox->addWidget(contents_list);
     hbox = new QHBoxLayout;
@@ -235,11 +260,49 @@ Wallphiller::Wallphiller()
     connect(btn_removecnt, SIGNAL(clicked()), SLOT(removeContent()));
     hbox->addWidget(btn_removecnt);
     vbox->addLayout(hbox);
+    connect(contents_list,
+            SIGNAL(doubleClicked(const QModelIndex&)),
+            SLOT(navigateToSelected(const QModelIndex&)));
     contents_box->setLayout(vbox);
     splitter->addWidget(contents_box);
 
     thumbnails_box = new QGroupBox(tr("Thumbnails"));
-    //splitter->addWidget(thumbnails_box);
+    vbox = new QVBoxLayout;
+    hbox = new QHBoxLayout;
+    txt_pathbox = new QLineEdit;
+    hbox->addWidget(txt_pathbox);
+    vbox->addLayout(hbox);
+    thumbslider = new QSlider(Qt::Horizontal);
+    thumbslider->setMinimum(1);
+    thumbslider->setMaximum(100);
+    vbox->addWidget(thumbslider);
+    thumbnailbox = new ThumbnailBox(this);
+    thumbnailbox->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::MinimumExpanding);
+    thumbnailbox->setNameFilter(nameFilter());
+
+    vbox->addWidget(thumbnailbox);
+    hbox = new QHBoxLayout;
+    btn_addfile = new QPushButton(tr("Add file"));
+    btn_addfile->setEnabled(false);
+    hbox->addWidget(btn_addfile);
+    vbox->addLayout(hbox);
+    connect(txt_pathbox,
+            SIGNAL(textEdited(const QString&)),
+            thumbnailbox,
+            SLOT(navigateTo(const QString&)));
+    connect(thumbslider,
+            SIGNAL(valueChanged(int)),
+            thumbnailbox,
+            SLOT(setThumbSize(int)));
+    connect(thumbnailbox,
+            SIGNAL(selectionChanged()),
+            SLOT(updateThumbButtons()));
+    connect(btn_addfile,
+            SIGNAL(clicked()),
+            SLOT(addThumbFile()));
+    thumbslider->setValue(QSettings().value("ThumbSize").toInt());
+    thumbnails_box->setLayout(vbox);
+    splitter->addWidget(thumbnails_box);
 
     settings_box = new QGroupBox(tr("Settings"));
     vbox = new QVBoxLayout;
@@ -250,6 +313,7 @@ Wallphiller::Wallphiller()
     txt_intval->setValidator(val_intval);
     connect(txt_intval, SIGNAL(editingFinished()), SLOT(saveInterval()));
     cmb_intval = new QComboBox;
+    cmb_intval->addItem(tr("seconds"), 's');
     cmb_intval->addItem(tr("minutes"), 'm');
     cmb_intval->addItem(tr("hours"), 'h');
     cmb_intval->addItem(tr("days"), 'd');
@@ -262,7 +326,7 @@ Wallphiller::Wallphiller()
     hline->setFrameShape(QFrame::HLine);
     hline->setFrameStyle(QFrame::Sunken);
     vbox->addWidget(hline);
-    vbox->addStretch(1);
+    //vbox->addStretch(1);
     settings_box->setLayout(vbox);
     splitter->addWidget(settings_box);
 
@@ -300,6 +364,8 @@ Wallphiller::Wallphiller()
     widget->setLayout(vbox);
     setCentralWidget(widget);
 
+    setAcceptDrops(true);
+
     //setAttribute(Qt::WA_DeleteOnClose); //Not necessary
 
     QShortcut *shortcut;
@@ -331,12 +397,9 @@ Wallphiller::Wallphiller()
     struct sigaction sig_handler;
 
     sigemptyset(&sig_handler.sa_mask);
-    //sig_handler.sa_flags = 0;
     sig_handler.sa_handler = sig;
 
-    sigaction(SIGHUP, &sig_handler, NULL); //1
     sigaction(SIGINT, &sig_handler, NULL); //2
-    sigaction(SIGQUIT, &sig_handler, NULL); //3
     sigaction(SIGTERM, &sig_handler, NULL); //15
 
     #elif defined(_WIN32) //Windows
@@ -344,7 +407,6 @@ Wallphiller::Wallphiller()
     //Note to self: Avoid signal()
 
     signal(SIGINT, sig); //2
-    signal(SIGABRT, sig); //6
     signal(SIGTERM, sig); //15
 
     #endif //Windows
@@ -433,8 +495,7 @@ QString
 Wallphiller::currentList()
 {
     int index = cmb_playlist->currentIndex();
-    if (index == -1) return activeList();
-    else return cmb_playlist->itemData(index).toString();
+    return cmb_playlist->itemData(index).toString();
 }
 
 qint64
@@ -661,8 +722,45 @@ Wallphiller::changeEvent(QEvent *event)
 void
 Wallphiller::closeEvent(QCloseEvent *event)
 {
-    if (!_is2ndinstance) QSettings().remove("PID");
-    QSettings().setValue("Geometry", saveGeometry());
+    if (!_is2ndinstance)
+    {
+        QSettings().remove("PID");
+        QSettings().setValue("ThumbSize", thumbslider->value());
+        QSettings().setValue("Geometry", saveGeometry());
+    }
+}
+
+void
+Wallphiller::dragEnterEvent(QDragEnterEvent *event)
+{
+    if (currentList().size()) event->accept();
+}
+
+void
+Wallphiller::dropEvent(QDropEvent *event)
+{
+    const QMimeData* data = event->mimeData();
+ 
+    if (data->hasUrls())
+    {
+        QStringList paths;
+        QList<QUrl> urls = data->urls();
+ 
+        for (int i = 0; i < urls.size(); i++)
+        {
+            paths.append(urls.at(i).toLocalFile());
+        }
+ 
+        if (paths.size() > 10)
+        {
+            if (QMessageBox::question(this,
+                tr("Add items"),
+                tr("Do you want to add all %1 items?").arg(paths.size()),
+                QMessageBox::Yes | QMessageBox::Cancel) != QMessageBox::Yes)
+                return;
+        }
+        foreach (QString path, paths) addContent(path);
+    }
 }
 
 void
@@ -755,7 +853,7 @@ Wallphiller::updateComboBox(QString selected)
     {
         QString text = item;
         if (isListActive(item)) text += " [ACTIVE]";
-        cmb_playlist->addItem(text, item);
+        cmb_playlist->addItem(text, item); //Changes selection
     }
     cmb_playlist->setCurrentIndex(cmb_playlist->findData(selected));
     statusBar()->showMessage(tr("Found %1 playlist(s)").
@@ -792,8 +890,8 @@ Wallphiller::selectList()
             font.setBold(false);
             btn_activatelist->setFont(font);
         }
-        resetContentsBox();
     }
+    resetContentsBox();
     btn_renamelist->setEnabled(false); //TODO
     btn_removelist->setEnabled(selected);
     btn_activatelist->setEnabled(selected);
@@ -821,19 +919,32 @@ Wallphiller::selectList(const QString &list)
 void
 Wallphiller::addList()
 {
-    QString name;
-    name = QInputDialog::getText(this,
-        tr("Add playlist"),
-        tr("Enter a name for the new playlist."));
-    if (name.isEmpty()) return;
     QStringList list = playlists();
-    if (list.contains(name))
+    QString name;
+    QString oldname;
+
+    do
     {
-        QMessageBox::critical(this,
-            tr("Invalid name"),
-            tr("This name is taken."));
-        return;
+        oldname = QInputDialog::getText(this,
+            tr("Add playlist"),
+            tr("Enter a name for the new playlist."),
+            QLineEdit::Normal,
+            oldname);
+        if (oldname.isEmpty()) return;
+        else name = oldname;
+        if (list.contains(name))
+        {
+            QMessageBox::critical(this,
+                tr("Invalid name"),
+                tr("This name is taken."));
+        }
+        else
+        {
+            oldname.clear();
+        }
     }
+    while (oldname.size());
+
     list << name;
     setPlaylists(list);
     setPlaylistSetting(name, "Contents", QVariant());
@@ -899,7 +1010,7 @@ Wallphiller::resetContentsBox()
 {
     QString name = currentList();
     QStringList lst;
-    lst = playlistSetting(name, "Contents").toStringList();
+    if (name.size()) lst = playlistSetting(name, "Contents").toStringList();
     contents_model->setStringList(lst);
 }
 
@@ -919,7 +1030,7 @@ Wallphiller::addContent(QString content)
     QString name = currentList();
     QStringList lst;
     lst = playlistSetting(name, "Contents").toStringList();
-    //if (lst.contains(content)) return;
+    if (lst.contains(content)) return;
     lst << content;
     setPlaylistSetting(name, "Contents", lst);
     resetContentsBox();
@@ -930,7 +1041,7 @@ Wallphiller::addContent()
 {
     addContent(QInputDialog::getText(this,
         tr("Add content to playlist"),
-        tr("Enter a folder path.")));
+        tr("Enter a valid path.")));
 }
 
 void
@@ -960,6 +1071,29 @@ Wallphiller::removeContent()
     lst.removeAll(content);
     setPlaylistSetting(name, "Contents", lst);
     resetContentsBox();
+}
+
+void
+Wallphiller::navigateToSelected(const QModelIndex &index)
+{
+    if (!index.isValid()) return;
+    QString path;
+    path = contents_list->model()->data(index).toString();
+    if (!QDir(path).exists()) return;
+    thumbnailbox->navigateTo(path);
+}
+
+void
+Wallphiller::updateThumbButtons()
+{
+    btn_addfile->setEnabled(thumbnailbox->isSelected());
+}
+
+void
+Wallphiller::addThumbFile()
+{
+    QString file = thumbnailbox->itemPath();
+    if (file.size()) addContent(file);
 }
 
 void
@@ -1013,15 +1147,16 @@ Wallphiller::toggleMode(bool checked)
 void
 Wallphiller::hideInstance()
 {
-    hide();
+    //hide(); //Too quick (will reappear)
+    QTimer::singleShot(0, this, SLOT(hide()));
 }
 
 void
 Wallphiller::showInstance()
 {
+    raise();
     show();
     activateWindow();
-    raise();
 }
 
 void

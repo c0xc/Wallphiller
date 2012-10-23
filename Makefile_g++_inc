@@ -11,14 +11,18 @@ CFLAGS+=-g
 
 CFLAGS+="-DCOMPILED_ON=\"`uname -a`\""
 
-CFLAGS_QT=-I /usr/include/QtGui
-CFLAGS_QT+=-I /usr/include/QtCore
+QTDIR?=/usr/include
+
+CFLAGS_QT+=-I $(QTDIR)/include
+CFLAGS_QT+=-I $(QTDIR)/include/QtGui
+CFLAGS_QT+=-I $(QTDIR)/include/QtCore
 
 # LINKER
 
-LDFLAGS_QT=-lQtGui -lQtCore
-LDFLAGS_QT_STATIC=-lXext -lX11 -pthread -lrt -lgobject-2.0 -lgthread-2.0 -lglib-2.0 -ldl -lz -lpng12 -lXft -lfreetype -lSM -lICE -lXrender -lfontconfig -ljpeg
-MOC=moc-qt4
+LDFLAGS_QT=-L$(QTDIR)/lib -lQtGui -lQtCore
+LDFLAGS_QT_STATIC="$QTDIR_STATIC/lib/*.a" -lXext -lX11 -pthread -lrt -lgobject-2.0 -lgthread-2.0 -lglib-2.0 -ldl -lz -lXft -lfreetype -lSM -lICE -lXrender -lfontconfig -ljpeg -pthread
+#MOC=moc-qt4
+MOC=$(QTDIR)/bin/moc
 
 # MISC
 

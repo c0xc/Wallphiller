@@ -29,10 +29,14 @@
 #include <QTimer>
 #include <QRadioButton>
 #include <QDateTime>
+#include <QScrollArea>
+#include <QUrl>
 
 #include <csignal>
 
 #include "version.hpp"
+
+#include "thumbnailbox.hpp"
 
 class ThumbnailBox;
 
@@ -105,6 +109,9 @@ private:
     QSplitter
     *splitter;
 
+    QScrollArea
+    *scrollarea;
+
     QGroupBox
     *playlist_box;
 
@@ -143,6 +150,18 @@ private:
 
     QGroupBox
     *thumbnails_box;
+
+    QLineEdit
+    *txt_pathbox;
+
+    ThumbnailBox
+    *thumbnailbox;
+
+    QSlider
+    *thumbslider;
+
+    QPushButton
+    *btn_addfile;
 
     QGroupBox
     *settings_box;
@@ -279,6 +298,12 @@ private slots:
     closeEvent(QCloseEvent *event);
 
     void
+    dragEnterEvent(QDragEnterEvent *event);
+
+    void
+    dropEvent(QDropEvent *event);
+
+    void
     checkInstance();
 
     void
@@ -327,6 +352,15 @@ private slots:
     removeContent();
 
     void
+    navigateToSelected(const QModelIndex &index);
+
+    void
+    updateThumbButtons();
+
+    void
+    addThumbFile();
+
+    void
     saveInterval();
 
     void
@@ -363,7 +397,6 @@ public slots:
 
     void
     update();
-
 };
 
 #endif

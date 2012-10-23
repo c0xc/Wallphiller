@@ -48,6 +48,12 @@ $(OBJDIR):
 $(BINDIR):
 	mkdir $@
 
+$(INCDIR)/thumbnailbox.hpp: $(SUBDIR)/thumbnailbox/$(INCDIR)/thumbnailbox.hpp
+	cp $< $@
+
+$(SRCDIR)/thumbnailbox.cpp: $(SUBDIR)/thumbnailbox/$(SRCDIR)/thumbnailbox.cpp
+	cp $< $@
+
 $(OBJDIR)/%.obj: $(SRCDIR)/%.cpp
 	$(CC) $(CFLAGS) $< $(CC_OPT_O)$@
 

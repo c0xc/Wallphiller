@@ -1,0 +1,3 @@
+[submodule "sub/thumbnailbox"]
+	path = sub/thumbnailbox
+	url = https://ppp@bitbucket.org/ppp/thumbnailbox.git

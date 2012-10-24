@@ -20,6 +20,7 @@ CFLAGS_QT+=-I $(QT_BASEDIR)\include\QtCore
 # LINKER
 
 LDFLAGS_QT="$(QT_BASEDIR)\lib\libQtCore4.a" "$(QT_BASEDIR)\lib\libQtGui4.a"
+LDFLAGS_QT+=-Wl,-subsystem,windows
 LDFLAGS_QT_STATIC=-static
 MOC="$(QT_BASEDIR)\bin\moc.exe"
 

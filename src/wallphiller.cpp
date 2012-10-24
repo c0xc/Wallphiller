@@ -1161,7 +1161,7 @@ void
 Wallphiller::hideInstance()
 {
     //hide(); //Too quick (will reappear)
-    QTimer::singleShot(0, this, SLOT(hide()));
+    QTimer::singleShot(500, this, SLOT(hide()));
 }
 
 void

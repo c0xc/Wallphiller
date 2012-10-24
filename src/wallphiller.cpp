@@ -371,7 +371,7 @@ Wallphiller::Wallphiller()
     QShortcut *shortcut;
 
     shortcut = new QShortcut(QKeySequence(Qt::Key_F5), this);
-    connect(shortcut, SIGNAL(activated()), SLOT(updateComboBox()));
+    connect(shortcut, SIGNAL(activated()), SLOT(refresh()));
 
     updatePreviewBox();
     updateComboBox();
@@ -596,9 +596,14 @@ Wallphiller::fileList(QString name)
 void
 Wallphiller::resetFileListCache(QString name)
 {
-    if (name.isEmpty()) name = activeList(); //Default
     QString e = encodeName(name);
     _files_cache.remove(e);
+}
+
+void
+Wallphiller::resetFileListCache()
+{
+    _files_cache.clear();
 }
 
 int
@@ -770,6 +775,14 @@ Wallphiller::checkInstance()
 
     QSettings().remove("PID2ndInstance");
     showInstance();
+}
+
+void
+Wallphiller::refresh()
+{
+    resetFileListCache();
+    updateComboBox();
+    updatePreviewBox();
 }
 
 void
@@ -989,8 +1002,6 @@ Wallphiller::activateList()
             tr("Do you want to activate this list?"),
             QMessageBox::Yes | QMessageBox::No) != QMessageBox::Yes) return;
         setListActive(name);
-        updateComboBox(name);
-        //selectList(name);
     }
     else
     {
@@ -999,10 +1010,8 @@ Wallphiller::activateList()
             tr("This is the active list. Do you want to deactivate it?"),
             QMessageBox::Yes | QMessageBox::No) != QMessageBox::Yes) return;
         setListActive();
-        updateComboBox(name);
-        //selectList(name);
     }
-    updatePreviewBox();
+    refresh();
 }
 
 void
@@ -1033,6 +1042,8 @@ Wallphiller::addContent(QString content)
     if (lst.contains(content)) return;
     lst << content;
     setPlaylistSetting(name, "Contents", lst);
+
+    resetFileListCache();
     resetContentsBox();
 }
 
@@ -1070,6 +1081,8 @@ Wallphiller::removeContent()
     lst = playlistSetting(name, "Contents").toStringList();
     lst.removeAll(content);
     setPlaylistSetting(name, "Contents", lst);
+
+    resetFileListCache();
     resetContentsBox();
 }
 

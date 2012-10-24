@@ -257,7 +257,10 @@ private:
     fileList(QString name = "");
 
     void
-    resetFileListCache(QString name = "");
+    resetFileListCache(QString name);
+
+    void
+    resetFileListCache();
 
     int
     position(QString name = "");
@@ -305,6 +308,9 @@ private slots:
 
     void
     checkInstance();
+
+    void
+    refresh();
 
     void
     updatePreviewBox();

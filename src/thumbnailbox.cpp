@@ -16,6 +16,8 @@ ThumbnailBox::ThumbnailBox(QWidget *parent)
 
     thumbcontainer = new QWidget;
     thumbcontainerlayout = new QHBoxLayout;
+    thumbcontainerlayout->setContentsMargins(QMargins());
+    thumbcontainerlayout->setSpacing(2);
     //This is where the thumbarea will be...
     thumbcontainer->setLayout(thumbcontainerlayout);
     hbox->addWidget(thumbcontainer);
@@ -130,7 +132,7 @@ ThumbnailBox::thumbWidth()
 }
 
 int
-ThumbnailBox::selected()
+ThumbnailBox::index()
 {
     if (_index < 0) _index = -1;
     if (_index >= list().size()) _index = -1;
@@ -140,14 +142,14 @@ ThumbnailBox::selected()
 bool
 ThumbnailBox::isSelected()
 {
-    return (selected() != -1);
+    return (index() != -1);
 }
 
 QFileInfo
 ThumbnailBox::item(int index)
 {
     QFileInfo inf;
-    if (index == -1) index = selected();
+    if (index == -1) index = this->index();
     if (index >= 0 && index < items().size()) inf = items().at(index);
     return inf;
 }
@@ -161,13 +163,13 @@ ThumbnailBox::itemPath(int index)
 bool
 ThumbnailBox::isFirst()
 {
-    return (selected() == 0);
+    return (index() == 0);
 }
 
 bool
 ThumbnailBox::isLast()
 {
-    return (selected() == count() - 1);
+    return (index() == count() - 1);
 }
 
 QString
@@ -255,7 +257,7 @@ ThumbnailBox::updateThumbnails()
             int relindex = i * cols + j;
             int absindex = relindex + hiddenthumbs;
             if (absindex >= count) break;
-            int index = selected();
+            int index = this->index();
 
             QString title = item(absindex).fileName();
             Thumb *thumb = new Thumb;
@@ -334,7 +336,7 @@ void
 ThumbnailBox::select(int index)
 {
     if (index < 0 || index >= count()) index = -1;
-    if (index == selected()) return;
+    if (index == this->index()) return;
     _index = index;
     updateThumbnails();
 
@@ -355,13 +357,13 @@ ThumbnailBox::unselect()
 void
 ThumbnailBox::selectPrevious()
 {
-    if (!isFirst()) select(selected() - 1);
+    if (!isFirst()) select(index() - 1);
 }
 
 void
 ThumbnailBox::selectNext()
 {
-    if (!isLast()) select(selected() + 1);
+    if (!isLast()) select(index() + 1);
 }
 
 void
@@ -378,6 +380,31 @@ ThumbnailBox::reload()
     QString path = this->path();
     _path.clear();
     navigateTo(path);
+}
+
+bool
+ThumbnailBox::setList(const QStringList &paths)
+{
+    clearCache();
+
+    _index = -1;
+
+    QFileInfoList &list = _list;
+    list.clear();
+
+    foreach (QString path, paths)
+    {
+        QFileInfo inf(path);
+        if (!inf.isFile() &&
+            !inf.isDir()) continue; //Invalid entry
+        list << inf;
+    }
+
+    updateThumbnails();
+
+    emit selectionChanged();
+
+    return true;
 }
 
 bool

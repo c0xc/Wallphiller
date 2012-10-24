@@ -27,6 +27,7 @@ LDFLAGS+=$(LDFLAGS_READLINE)
 LDFLAGS+=$(ADDLDFLAGS)
 
 MODULES=main wallphiller thumbnailbox
+HEADERS=$(MODULES:%=$(INCDIR)/%.hpp)
 SOURCES=$(MODULES:=.cpp)
 SOURCES_QT=$(MODULES:=.moc.cpp)
 OBJECTS=$(SOURCES:%.cpp=$(OBJDIR)/%.obj)
@@ -41,7 +42,7 @@ build: compile link
 
 build-static: compile-static link-static
 
-compile: $(OBJDIR) $(OBJECTS) $(OBJECTS_QT) $(VERSIONFILE)
+compile: $(OBJDIR) $(HEADERS) $(OBJECTS) $(OBJECTS_QT) $(VERSIONFILE)
 
 $(OBJDIR):
 	mkdir $@

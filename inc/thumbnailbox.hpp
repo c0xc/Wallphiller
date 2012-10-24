@@ -122,7 +122,7 @@ public:
     thumbWidth();
 
     int
-    selected();
+    index();
 
     bool
     isSelected();
@@ -185,6 +185,9 @@ public slots:
 
     void
     reload();
+
+    bool
+    setList(const QStringList &paths);
 
     bool
     navigateTo(const QString &path);

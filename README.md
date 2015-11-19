@@ -1,4 +1,4 @@
-WALLPHILLER
+Wallphiller
 ===========
 
 This tool can change your wallpaper.
@@ -10,10 +10,16 @@ Build
 -----
 
 Default build:
-$ make
+
+    $ make
 
 Windows build:
-$ make PLATFORM=win32-g++
+
+    $ make PLATFORM=win32-g++
+
+Clean up:
+
+    $ make clean
 
 
 
@@ -25,7 +31,8 @@ The resource files are in res/.
 The resource definition list is in res/res.qrc.
 
 Generate resource file:
-$ cd res/ && $QTDIR/bin/rcc res.qrc -o res.src
+
+    $ cd res/ && $QTDIR/bin/rcc res.qrc -o res.src
 
 
 

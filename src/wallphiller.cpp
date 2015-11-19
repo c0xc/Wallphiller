@@ -1,394 +1,435 @@
 #define DEFINE_GLOBALS
 #include "wallphiller.hpp"
 
-
-
-//---
-
-
-
-PreviewLabel::PreviewLabel(QWidget *parent)
-            : QLabel(parent)
-{
-}
-
-void
-PreviewLabel::resizeEvent(QResizeEvent *event)
-{
-    emit resized();
-}
-
-
-
-//---
-
-
-
-QString
-Wallphiller::wallpaperSetterInfo()
-{
-    QString text;
-    const QString desktop_session = getenv("DESKTOP_SESSION");
-
-    #if defined(_WIN32)
-
-    text = "[WINDOWS]";
-
-    #else
-
-    if (desktop_session == "gnome")
-    {
-        text = "[GNOME]";
-    }
-    else if (desktop_session == "kde-plasma")
-    {
-        text = "[KDE]";
-        text += " ?";
-    }
-    else if (desktop_session == "fluxbox")
-    {
-        text = "[FLUXBOX]";
-        text += " [fbsetbg]";
-    }
-
-    #endif
-
-    if (text.isEmpty()) text = "?";
-
-    return text;
-}
-
-void
-Wallphiller::setWallpaper(QString file)
-{
-    if (!QFile::exists(file)) return; //Important (prevents system() abuse)
-    const QString desktop_session = getenv("DESKTOP_SESSION");
-
-    QString cmd;
-
-    #if defined(_WIN32)
-
-    //Convert to BMP
-
-    QString bmpfile = QFileInfo(QSettings().fileName()).dir().
-        filePath("Wallpaper.bmp");
-    if (QImage(file).save(bmpfile))
-    {
-        SystemParametersInfo(SPI_SETDESKWALLPAPER,
-            0,
-            const_cast<char*>(bmpfile.toStdString().c_str()),
-            SPIF_UPDATEINIFILE | SPIF_SENDCHANGE);
-    }
-
-    #else
-
-    if (desktop_session == "gnome")
-    {
-        cmd = QString("gsettings set "
-        "org.gnome.desktop.background "
-        "picture-uri \"file://%1\"").arg(file);
-        system(cmd.toStdString().c_str());
-        cmd = QString("gsettings set "
-        "org.gnome.desktop.background "
-        "picture-options \"stretched\"");
-        system(cmd.toStdString().c_str());
-    }
-    else if (desktop_session == "kde-plasma")
-    {
-        //?
-    }
-    else if (desktop_session == "fluxbox")
-    {
-        cmd = QString("fbsetbg \"%1\"").arg(file);
-        system(cmd.toStdString().c_str());
-    }
-
-    #endif
-
-}
-
-
-
-//---
-
-
-
 Wallphiller* Wallphiller::instanceptr = 0;
 
 Wallphiller::Wallphiller()
-           : _is2ndinstance(false),
-             _updating_preview_box(false),
-             _active(' '),
-             _interval(-1),
-             _last(0),
-             _paused(false)
+           : shared_memory("WALLPHILLER_INSTANCE"),
+             tmr_check_shared_memory(0),
+             _configured_interval_value(0),
+             _configured_thumbnail_cache_limit(0),
+             _current_playlist(0),
+             _position(-1),
+             _de(DE::None)
 {
-    Wallphiller::instanceptr = this;
+    //Store self reference for singleton call (cache callback)
+    instanceptr = this;
 
+    //UTF-8
     QTextCodec::setCodecForCStrings(QTextCodec::codecForName("utf8"));
 
+    //QSettings defaults
     QCoreApplication::setOrganizationName(PROGRAM); //~/.config/Wallphiller
     QCoreApplication::setApplicationName(PROGRAM);
     QCoreApplication::setApplicationVersion(GITVERSION);
     QSettings::setDefaultFormat(QSettings::IniFormat);
 
-    if (QSettings().contains("PID2ndInstance")) //2nd instance?
+    //The shared memory segment contains a "request" flag (boolean),
+    //which is used by a second instance to tell the first instance
+    //to show up. The first instance will check this flag periodically.
+    //If a shared memory segment is found, another instance is probably
+    //already running, so the flag is set and this instance terminates.
+    //However, a "last update" timestamp is also stored, which is used
+    //to determine if the memory segment is actually a dead leftover
+    //from a previously killed instance. In this case, it will be discarded.
+    //TODO IDEA access request flag directly without QDataStream
+    //We serialize and deserialize the whole memory segment using QDataStream
+    //every couple of seconds. This is overkill.
+    //We should get rid of QDataStream and the flag should be checked
+    //directly, for example by defining it do be at position 99.
+    //Really, reading, parsing, writing the whole segment every 5 seconds
+    //is useless overhead. But it should work for now and will be fixed.
+
+    //Shared memory for single instance constraint
+    QString shmem_title = "Wallphiller";
+    qint64 current_time = QDateTime::currentMSecsSinceEpoch() / 1000; //sec
+    qint64 own_pid = QCoreApplication::applicationPid();
+    QBuffer shmem_buffer_out;
+    shmem_buffer_out.open(QBuffer::ReadWrite);
     {
-        if (QMessageBox::critical(this,
-            tr("Multiple instances"),
-            tr("Something is wrong. Another instance is (was) running as %1."
-               " Also, a second instance has been started, "
-               "but it failed to close properly."
-               " Do you want to override?").
-               arg(QSettings().value("PID").toString()),
-            QMessageBox::Ok | QMessageBox::Cancel) != QMessageBox::Ok)
+        QDataStream stream(&shmem_buffer_out);
+        stream << shmem_title;
+        stream << current_time; //last update
+        stream << own_pid; //pid of first instance
+        stream << (bool)false; //show request flag
+    }
+    if (shared_memory.attach())
+    {
+        //Found and attached to existing memory segment
+
+        //Check time, how old is it?
+        QBuffer shmem_buffer_in;
+        shared_memory.lock();
+        shmem_buffer_in.setData((char*)shared_memory.constData(),
+            shared_memory.size());
+        shared_memory.unlock();
+        //Not detaching yet, see below
+        shmem_buffer_in.open(QBuffer::ReadOnly);
+        QString other_shmem_title;
+        qint64 other_update;
+        qint64 other_pid;
+        bool other_show_requested;
         {
-            _is2ndinstance = true;
+            QDataStream stream(&shmem_buffer_in);
+            stream
+                >> other_shmem_title
+                >> other_update
+                >> other_pid
+                >> other_show_requested;
+        }
+        int timeout = 15;
+        int age = current_time - other_update;
+        if (age > timeout)
+        {
+            //Too old, it's a leftover
+            qDebug() << "Found old memory segment, discarding";
+
+            //Detach, ignore dead leftover
+            if (!shared_memory.detach())
+            {
+                qWarning() << "Detaching failed";
+            }
+
+        }
+        else
+        {
+            //It's an active memory segment
+            //Other instance is running
+            qWarning() << "Another instance is already running";
+
+            //Request first instance (set show flag)
+            //Only this flag is changed from false to true!
+            //The size of the whole segment does not change!
+            //So no need to worry about overflowing.
+            QBuffer shmem_buffer_flag_out;
+            shmem_buffer_flag_out.open(QBuffer::ReadWrite);
+            {
+                QDataStream stream(&shmem_buffer_flag_out);
+                stream << shmem_title; //unchanged
+                stream << current_time; //unchanged
+                stream << own_pid; //unchanged
+                stream << (bool)true; //show request flag ON
+            }
+            shared_memory.lock();
+            char *to = (char*)shared_memory.data();
+            const char *from = shmem_buffer_flag_out.data().data();
+            memcpy(to, from, shared_memory.size());
+            shared_memory.unlock();
+
+            //Explicitly detach (just to make it obvious that we're done)
+            shared_memory.detach();
+
+            //Terminate
             QTimer::singleShot(0, this, SLOT(close()));
             return;
         }
-        QSettings().remove("PID2ndInstance");
     }
-    else if (QSettings().contains("PID")) //another instance is running
+    //First instance
+    if (!shared_memory.create(shmem_buffer_out.size()))
     {
-        std::cout << tr("An instance is already running with PID %1.").
-                     arg(QSettings().value("PID").toString()).
-                     toStdString() << std::endl;
-        QSettings().setValue("PID2ndInstance", true);
-        _is2ndinstance = true;
-        hide();
-        QTimer::singleShot(0, this, SLOT(close()));
-        return;
+        //Creating shared memory segment failed
+        qWarning() << "Creating shared memory segment failed";
+        qWarning() << shared_memory.errorString();
+        //Now what?
     }
-    QSettings().setValue("PID", QApplication::applicationPid());
+    else
+    {
+        //Write initial stuff
+        shared_memory.lock();
+        char *to = (char*)shared_memory.data();
+        const char *from = shmem_buffer_out.data().data();
+        memcpy(to, from, shared_memory.size());
+        shared_memory.unlock();
+
+        //Set timer to check request flag periodically
+        tmr_check_shared_memory = new QTimer(this);
+        connect(tmr_check_shared_memory,
+                SIGNAL(timeout()),
+                SLOT(checkAndUpdateMemory()));
+        tmr_check_shared_memory->start(5000);
+
+    }
+
+    //Detect desktop environment TODO
+    //Some variables might contain "this-is-deprecated"
+    //More indicators are needed
+    //TODO check XDG_*
+    if (!QString(std::getenv("GNOME_DESKTOP_SESSION_ID")).isEmpty())
+    {
+        _de = DE::Gnome;
+    }
+    else if (!QString(std::getenv("MATE_DESKTOP_SESSION_ID")).isEmpty())
+    {
+        _de = DE::Mate;
+    }
+    else if (!QString(std::getenv("CINNAMON_DESKTOP_SESSION_ID")).isEmpty())
+    {
+        _de = DE::Cinnamon;
+    }
+    else if (QString(std::getenv("XDG_SESSION_DESKTOP")) == "XFCE")
+    {
+        _de = DE::Xfce;
+    }
+    #if defined(_WIN32)
+    _de = DE::Windows;
+    #endif
+
+    //Default settings
+    foreach (QByteArray f, QImageReader::supportedImageFormats())
+    {
+        QString type = f; //"jpg"
+        _read_formats << type;
+    }
 
     //GUI
+    //The main window consists of 4 horizontal sections;
+    //playlist/directory, thumbnail box (most space), thumbnail slider,
+    //general settings and buttons.
+    //Specific settings are in a separate window, the user has to click
+    //a button to get there.
+    //The main window should be simple and not have hundreds of buttons,
+    //menus and "did you know" nonsense (like certain KDE applications),
+    //but specific settings should still be available
+    //(unlike many Gnome 3 applications that lack most options).
 
-    QVBoxLayout *vbox;
-    QHBoxLayout *hbox;
-    QFrame *hline;
+    //Layout items
+    QVBoxLayout *vbox = 0;
+    QHBoxLayout *hbox = 0;
+    QFrame *hline = 0;
+    QVBoxLayout *vbox_main = new QVBoxLayout;
 
-    //Preview
+    //Section 1: Playlist
+    //-------------------
 
-    preview_box = new QGroupBox;
-    preview_update_timer = new QTimer(this);
-    preview_update_timer->stop();
-    connect(preview_update_timer,
-            SIGNAL(timeout()),
-            SLOT(updatePreviewBox()));
-    vbox = new QVBoxLayout;
+    //Section layout
     hbox = new QHBoxLayout;
-    QLabel *previewlabel;
-    for (int i = 0; i < 5; i++)
-    {
-        previewlabel = new PreviewLabel;
-        connect(previewlabel,
-                SIGNAL(resized()),
-                SLOT(scheduleUpdatePreviewBox()));
-        previewlabel->setFrameStyle(QFrame::Panel | QFrame::Raised);
-        previewlabel->setLineWidth(3);
-        preview_widgets << previewlabel;
-        hbox->addWidget(previewlabel);
-    }
-    vbox->addLayout(hbox);
+
+    //Title (selected playlist)
+    txt_playlist_title = new QLineEdit;
+    txt_playlist_title->setReadOnly(true);
+    hbox->addWidget(txt_playlist_title);
+
+    //Playlist selection button (dropdown menu)
+    //An option to simply select a directory and be done is provided.
+    //This menu could contain a list of bookmarked playlists.
+    btn_playlist = new QToolButton;
+    btn_playlist->setText(tr("&Playlist"));
+    hbox->addWidget(btn_playlist);
+    btn_playlist->setPopupMode(QToolButton::InstantPopup);
+    setPlaylistMenu();
+
+    //Add to layout
+    vbox_main->addLayout(hbox);
+    hbox = 0;
+
+    //Section 2: Thumbnail box
+    //------------------------
+
+    //Section layout
     hbox = new QHBoxLayout;
-    btn_previous = new QPushButton(tr("Previous"));
-    connect(btn_previous, SIGNAL(clicked()), SLOT(previous()));
-    hbox->addWidget(btn_previous);
-    btn_pause = new QPushButton(tr("Pause"));
-    connect(btn_pause, SIGNAL(clicked()), SLOT(pause()));
-    hbox->addWidget(btn_pause);
-    btn_next = new QPushButton(tr("Next"));
-    connect(btn_next, SIGNAL(clicked()), SLOT(next()));
-    hbox->addWidget(btn_next);
-    vbox->addLayout(hbox);
-    preview_box->setLayout(vbox);
 
-    //Playlist
-
-    splitter = new QSplitter(Qt::Vertical);
-    splitter->setChildrenCollapsible(false);
-    scrollarea = new QScrollArea;
-    scrollarea->setWidgetResizable(true);
-    scrollarea->setFrameStyle(0);
-    scrollarea->setLineWidth(0);
-    scrollarea->setWidget(splitter);
-
-    playlist_box = new QGroupBox(tr("Playlists"));
-    vbox = new QVBoxLayout;
-    cmb_playlist = new QComboBox;
-    connect(cmb_playlist,
-            SIGNAL(currentIndexChanged(int)),
-            SLOT(selectList(int)));
-    vbox->addWidget(cmb_playlist);
-    hbox = new QHBoxLayout;
-    btn_addlist = new QPushButton(tr("Add"));
-    connect(btn_addlist, SIGNAL(clicked()), SLOT(addList()));
-    hbox->addWidget(btn_addlist);
-    btn_renamelist = new QPushButton(tr("Rename"));
-    connect(btn_renamelist, SIGNAL(clicked()), SLOT(renameList()));
-    hbox->addWidget(btn_renamelist);
-    btn_removelist = new QPushButton(tr("Remove"));
-    connect(btn_removelist, SIGNAL(clicked()), SLOT(removeList()));
-    hbox->addWidget(btn_removelist);
-    btn_activatelist = new QPushButton(tr("Activate"));
-    connect(btn_activatelist, SIGNAL(clicked()), SLOT(activateList()));
-    hbox->addWidget(btn_activatelist);
-    vbox->addLayout(hbox);
-    hline = new QFrame;
-    hline->setFrameShape(QFrame::HLine);
-    //hline->setFrameStyle(QFrame::Sunken);
-    vbox->addWidget(hline);
-    vbox->addWidget(scrollarea);
-    playlist_box->setLayout(vbox);
-
-    contents_box = new QGroupBox(tr("Contents"));
-    vbox = new QVBoxLayout;
-    contents_model = new QStringListModel(this);
-    contents_list = new QListView;
-    contents_list->setEditTriggers(QAbstractItemView::NoEditTriggers);
-    contents_list->setModel(contents_model);
-    vbox->addWidget(contents_list);
-    hbox = new QHBoxLayout;
-    btn_addcnt = new QPushButton(tr("Add content"));
-    connect(btn_addcnt, SIGNAL(clicked()), SLOT(addContent()));
-    hbox->addWidget(btn_addcnt);
-    btn_addfolder = new QPushButton(tr("Add folder"));
-    connect(btn_addfolder, SIGNAL(clicked()), SLOT(addFolder()));
-    hbox->addWidget(btn_addfolder);
-    btn_removecnt = new QPushButton(tr("Remove content"));
-    connect(btn_removecnt, SIGNAL(clicked()), SLOT(removeContent()));
-    hbox->addWidget(btn_removecnt);
-    vbox->addLayout(hbox);
-    connect(contents_list,
-            SIGNAL(doubleClicked(const QModelIndex&)),
-            SLOT(navigateToSelected(const QModelIndex&)));
-    contents_box->setLayout(vbox);
-    splitter->addWidget(contents_box);
-
-    thumbnails_box = new QGroupBox(tr("Thumbnails"));
-    vbox = new QVBoxLayout;
-    hbox = new QHBoxLayout;
-    txt_pathbox = new QLineEdit;
-    hbox->addWidget(txt_pathbox);
-    vbox->addLayout(hbox);
-    thumbslider = new QSlider(Qt::Horizontal);
-    thumbslider->setMinimum(1);
-    thumbslider->setMaximum(100);
-    vbox->addWidget(thumbslider);
+    //Thumbnail box
     thumbnailbox = new ThumbnailBox(this);
-    thumbnailbox->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::MinimumExpanding);
-    thumbnailbox->setNameFilter(nameFilter());
+    hbox->addWidget(thumbnailbox);
+    thumbnailbox->setFrame();
+    thumbnailbox->setDarkBackground();
+    connect(thumbnailbox,
+            SIGNAL(itemSelected(int)),
+            SLOT(selectWallpaper(int)));
 
-    vbox->addWidget(thumbnailbox);
-    hbox = new QHBoxLayout;
-    btn_addfile = new QPushButton(tr("Add file"));
-    btn_addfile->setEnabled(false);
-    hbox->addWidget(btn_addfile);
-    vbox->addLayout(hbox);
-    connect(txt_pathbox,
-            SIGNAL(textEdited(const QString&)),
-            thumbnailbox,
-            SLOT(navigateTo(const QString&)));
-    connect(thumbslider,
+    //Add to layout
+    vbox_main->addLayout(hbox, 1);
+    hbox = 0;
+
+    //Thumbnail size changer thingy
+    sld_thumb_size = new QSlider(Qt::Horizontal);
+    vbox_main->addWidget(sld_thumb_size);
+    sld_thumb_size->setMinimum(10);
+    sld_thumb_size->setMaximum(90);
+    connect(sld_thumb_size,
             SIGNAL(valueChanged(int)),
             thumbnailbox,
             SLOT(setThumbSize(int)));
-    connect(thumbnailbox,
-            SIGNAL(selectionChanged()),
-            SLOT(updateThumbButtons()));
-    connect(btn_addfile,
-            SIGNAL(clicked()),
-            SLOT(addThumbFile()));
-    thumbslider->setValue(QSettings().value("ThumbSize").toInt());
-    thumbnails_box->setLayout(vbox);
-    splitter->addWidget(thumbnails_box);
+    int thumb_size_percentage = 33;
+    sld_thumb_size->setValue(thumb_size_percentage);
 
-    settings_box = new QGroupBox(tr("Settings"));
-    vbox = new QVBoxLayout;
+    //Section 3: Thumbnail slider
+    //---------------------------
+
+    //Section layout
     hbox = new QHBoxLayout;
-    QLabel *lbl_intval = new QLabel(tr("Interval"));
-    txt_intval = new QLineEdit;
-    QIntValidator *val_intval = new QIntValidator(this);
-    txt_intval->setValidator(val_intval);
-    connect(txt_intval, SIGNAL(editingFinished()), SLOT(saveInterval()));
-    cmb_intval = new QComboBox;
-    cmb_intval->addItem(tr("seconds"), 's');
-    cmb_intval->addItem(tr("minutes"), 'm');
-    cmb_intval->addItem(tr("hours"), 'h');
-    cmb_intval->addItem(tr("days"), 'd');
-    connect(cmb_intval, SIGNAL(currentIndexChanged(int)), SLOT(saveInterval(int)));
-    hbox->addWidget(lbl_intval);
-    hbox->addWidget(txt_intval);
-    hbox->addWidget(cmb_intval);
-    vbox->addLayout(hbox);
+
+    //TODO to be implemented
+    //Thumbnail slider should be scrollable (horizontally) (mouse wheel).
+    //Current wallpaper should be in the middle.
+    QLabel *lbl_thumbnailslider = new QLabel; //TODO
+    hbox->addWidget(lbl_thumbnailslider);
+
+    //Horizontal line
     hline = new QFrame;
     hline->setFrameShape(QFrame::HLine);
-    hline->setFrameStyle(QFrame::Sunken);
-    vbox->addWidget(hline);
-    //vbox->addStretch(1);
-    settings_box->setLayout(vbox);
-    splitter->addWidget(settings_box);
+    vbox_main->addWidget(hline);
+    hline = 0;
 
-    //Config
+    //Add to layout
+    vbox_main->addLayout(hbox);
+    hbox = 0;
 
-    config_box = new QGroupBox(tr("Config"));
-    vbox = new QVBoxLayout;
-    rad_auto = new QRadioButton(tr("Auto detection"));
-    connect(rad_auto, SIGNAL(toggled(bool)), SLOT(toggleMode(bool)));
-    lbl_autoinfo = new QLabel(wallpaperSetterInfo());
+    //Horizontal line
+    hline = new QFrame;
+    hline->setFrameShape(QFrame::HLine);
+    vbox_main->addWidget(hline);
+    hline = 0;
+
+    //Section 4: General settings and buttons
+    //---------------------------------------
+
+    //General section -> bottom_widget -> vbox
     hbox = new QHBoxLayout;
-    hbox->addWidget(rad_auto);
-    hbox->addWidget(lbl_autoinfo);
-    vbox->addLayout(hbox);
-    rad_command = new QRadioButton(tr("Execute command"));
-    connect(rad_auto, SIGNAL(toggled(bool)), SLOT(toggleMode(bool)));
-    txt_command = new QLineEdit;
-    txt_command->setText(QSettings().value("Command").toString());
-    hbox = new QHBoxLayout;
-    hbox->addWidget(rad_command);
-    hbox->addWidget(txt_command);
-    vbox->addLayout(hbox);
-    rad_auto->setChecked(txt_command->text().isEmpty());
-    //if (txt_command->text().isEmpty()) else rad_auto->setChecked(true);
-    //else rad_command->setChecked(true);
-    config_box->setLayout(vbox);
-
-    //Window stuff
-
+    QWidget *bottom_area = new QWidget;
+    hbox->addWidget(bottom_area);
     vbox = new QVBoxLayout;
-    vbox->addWidget(preview_box);
-    vbox->addWidget(playlist_box);
-    vbox->addWidget(config_box);
+    bottom_area->setLayout(vbox);
+    vbox_main->addLayout(hbox);
+    hbox = 0;
+
+    //Buttons
+    btn_settings = new QPushButton(tr("&Settings"));
+    connect(btn_settings,
+            SIGNAL(clicked()),
+            SLOT(openSettingsWindow()));
+    btn_tray = new QPushButton(tr("Minimize to &Tray"));
+    connect(btn_tray,
+            SIGNAL(clicked()),
+            SLOT(minimizeToTray()));
+    btn_hide = new QPushButton(tr("&Hide"));
+    btn_hide->setToolTip(tr(
+        "This will hide the program, "
+        "which will continue running in the background. "
+        "Restart the program to make it reappear."
+    ));
+    connect(btn_hide,
+            SIGNAL(clicked()),
+            SLOT(hideInstance()));
+    btn_quit = new QPushButton(tr("&Quit"));
+    btn_quit->setToolTip(tr(
+        "This will terminate the program."
+    ));
+    connect(btn_quit,
+            SIGNAL(clicked()),
+            SLOT(close()));
+
+    //Button row
+    hbox = new QHBoxLayout;
+    hbox->addWidget(btn_settings);
+    hbox->addStretch();
+    hbox->addWidget(btn_tray);
+    hbox->addWidget(btn_hide);
+    hbox->addWidget(btn_quit);
+    vbox->addLayout(hbox);
+    hbox = 0;
+    vbox = 0;
+
+    //Window/misc
+    //-----------
+
+    //Wallpaper timer
+    tmr_next_wallpaper = new QTimer(this);
+    connect(tmr_next_wallpaper,
+            SIGNAL(timeout()),
+            SLOT(next()));
+
+    //Window layout
     QWidget *widget = new QWidget;
-    widget->setLayout(vbox);
+    widget->setLayout(vbox_main);
     setCentralWidget(widget);
 
-    setAcceptDrops(true);
+    //Quit on close (don't keep running invisibly by default)
+    setAttribute(Qt::WA_DeleteOnClose); //quit on close
 
-    //setAttribute(Qt::WA_DeleteOnClose); //Not necessary
+    //Application icon
+    QPixmap icon_pixmap(":/Apps-preferences-desktop-wallpaper-icon.png");
+    QIcon icon = QIcon(icon_pixmap);
+    setWindowIcon(icon);
 
+    //Tray icon
+    tray_icon = new QSystemTrayIcon(this);
+    tray_icon->setIcon(icon);
+    tray_icon->setToolTip(PROGRAM);
+    connect(tray_icon,
+            SIGNAL(activated(QSystemTrayIcon::ActivationReason)),
+            SLOT(handleTrayClicked(QSystemTrayIcon::ActivationReason)));
+
+    //Restore settings
+    QSettings settings;
+    Playlist *saved_playlist = 0;
+    int start_position = 0;
+    if (settings.contains("Playlist"))
+    {
+        //Read last playlist
+        QByteArray serialized = settings.value("Playlist").toByteArray();
+        saved_playlist = new Playlist(serialized, this);
+
+        //Last wallpaper
+        QStringList list = saved_playlist->pictureAddressList();
+        QString last_wallpaper = settings.value("LastWallpaper").toString();
+        if (list.contains(last_wallpaper))
+        {
+            start_position = list.indexOf(last_wallpaper);
+        }
+
+    }
+    restoreGeometry(settings.value("Geometry").toByteArray());
+    _change_routine = settings.value("ChangeRoutine").toString();
+    _change_routine_command =
+        settings.value("ChangeRoutineCommand").toString();
+    if (settings.contains("CacheLimit"))
+    {
+        int limit = settings.value("CacheLimit").toInt();
+        if (limit < 0) limit = 0;
+        _configured_thumbnail_cache_limit = limit;
+        if (limit) thumbnailbox->setCacheLimit(limit);
+    }
+    if (settings.contains("IntervalValue"))
+    {
+        int value = settings.value("IntervalValue").toInt();
+        if (value < 0) value = 0;
+        _configured_interval_value = value;
+        QString unit =settings.value("IntervalUnit").toString(); 
+        _configured_interval_unit = unit;
+    }
+
+    //Start minimized to tray if requested
+    //Also starting minimized if last instance was stopped minimized
+    QStringList args = QCoreApplication::arguments();
+    args.removeFirst(); //skip argv[0]
+    bool was_minimized = false;
+    if (settings.contains("Minimized"))
+        was_minimized = settings.value("Minimized").toBool();
+    if (args.contains("-minimized") || was_minimized)
+    {
+        QTimer::singleShot(0, this, SLOT(minimizeToTray()));
+    }
+
+    //Restore playlist
+    //This may start the timer
+    //Playlist continues where it was stopped last time
+    setPlaylist(saved_playlist, start_position);
+
+    //Keyboard shortcuts
     QShortcut *shortcut;
 
-    shortcut = new QShortcut(QKeySequence(Qt::Key_F5), this);
-    connect(shortcut, SIGNAL(activated()), SLOT(refresh()));
+    //F4 clear cache
+    shortcut = new QShortcut(QKeySequence(Qt::Key_F4), this);
+    connect(shortcut, SIGNAL(activated()), thumbnailbox, SLOT(clearCache()));
 
-    updatePreviewBox();
-    updateComboBox();
-    selectList();
+    //Ctrl + PageUp previous
+    shortcut = new QShortcut(QKeySequence(Qt::CTRL + Qt::Key_PageUp), this);
+    connect(shortcut, SIGNAL(activated()), SLOT(previous()));
 
-    restoreGeometry(QSettings().value("Geometry").toByteArray());
-
-    tmr_instance = new QTimer(this);
-    tmr_instance->setInterval(1000);
-    connect(tmr_instance, SIGNAL(timeout()), SLOT(checkInstance()));
-    tmr_instance->start();
-
-    timer = new QTimer(this);
-    timer->setInterval(1000);
-    timer->stop();
-    connect(timer, SIGNAL(timeout()), SLOT(update()));
-    timer->start();
+    //Ctrl + PageDown next
+    shortcut = new QShortcut(QKeySequence(Qt::CTRL + Qt::Key_PageDown), this);
+    connect(shortcut, SIGNAL(activated()), SLOT(next()));
 
     //Enable signal handling
 
@@ -413,332 +454,126 @@ Wallphiller::Wallphiller()
 
 }
 
+Wallphiller::~Wallphiller()
+{
+    //Explicitly detach from the shared memory segment
+    shared_memory.detach();
+
+}
+
 void
 Wallphiller::sig(int signal)
 {
-    std::cout << "Caught signal " << signal << ", now exiting..." << std::endl;
+    std::cerr
+        << "Caught signal " << signal
+        << ", now exiting..." << std::endl;
+
     Wallphiller *instance = Wallphiller::instanceptr;
     QTimer::singleShot(0, instance, SLOT(close()));
 }
 
-QStringList
-Wallphiller::playlists()
-{
-    QStringList lists = QSettings().value("Playlists/Names").toStringList();
-    for (int i = 0; i < lists.size(); i++)
-    {
-        lists[i] = decodeName(lists[i]);
-    }
-    return lists;
-}
-
 void
-Wallphiller::setPlaylists(QStringList lists)
+Wallphiller::setPlaylistMenu()
 {
-    for (int i = 0; i < lists.size(); i++)
-    {
-        lists[i] = encodeName(lists[i]);
-    }
-    QSettings().setValue("Playlists/Names", lists);
-}
+    //Recreate menu
+    if (btn_playlist->menu()) btn_playlist->menu()->deleteLater();
+    QMenu *menu = new QMenu(btn_playlist);
+    btn_playlist->setMenu(menu);
 
-QStringList
-Wallphiller::nameFilter()
-{
-    QStringList lst = QSettings().value("NameFilters").toStringList();
-    if (lst.isEmpty()) lst << "*.jpg" << "*.bmp" << "*.png";
-    return lst;
-}
+    //Load full directory (quick, no detour)
+    QAction *act_load_full = new QAction(menu);
+    act_load_full->setText(tr("Load full &directory"));
+    menu->addAction(act_load_full);
+    connect(act_load_full,
+            SIGNAL(triggered()),
+            SLOT(createPlaylistWithFullDirectory()));
 
-QString
-Wallphiller::encodeName(QString name)
-{
-    return name.toUtf8().toHex().toUpper().constData();
-}
+    //Load directory non-recursive (quick, no detour)
+    QAction *act_load_shallow = new QAction(menu);
+    act_load_shallow->setText(tr("Load directory (without &subdirectories)"));
+    menu->addAction(act_load_shallow);
+    connect(act_load_shallow,
+            SIGNAL(triggered()),
+            SLOT(createPlaylistWithShallowDirectory()));
 
-QString
-Wallphiller::decodeName(QString name)
-{
-    return QByteArray::fromHex(name.toUtf8());
-}
+    //Load files (quick, no detour)
+    QAction *act_load_files = new QAction(menu);
+    act_load_files->setText(tr("Load &files"));
+    menu->addAction(act_load_files);
+    connect(act_load_files,
+            SIGNAL(triggered()),
+            SLOT(createPlaylistWithFiles()));
 
-QString
-Wallphiller::activeList()
-{
-    if (_active == QString(' ')) //This is weird (bool _isactive ?)
-        _active = decodeName(QSettings().value("Playlists/Active").toString());
-    //if (_active.isEmpty())
-    //    _active = decodeName(QSettings().value("Playlists/Active").toString());
-    return _active;
-}
+    //Playlist settings window TODO
 
-bool
-Wallphiller::isListActive(QString name)
-{
-    if (name.isEmpty()) name = currentList();
-    if (name.isEmpty()) return false;
-    QString e = encodeName(name);
-    return QSettings().value("Playlists/Active").toString() == e;
-}
+    //Separator
+    menu->addSeparator();
 
-void
-Wallphiller::setListActive(QString name)
-{
-    _active = ' ';
-    _interval = -1;
-    QString e;
-    if (!name.isEmpty()) e = encodeName(name);
-    QSettings().setValue("Playlists/Active", e);
-}
+    //Unload
+    QAction *act_unload = new QAction(menu);
+    act_unload->setText(tr("&Unload"));
+    menu->addAction(act_unload);
+    connect(act_unload,
+            SIGNAL(triggered()),
+            SLOT(unloadPlaylist()));
 
-QString
-Wallphiller::currentList()
-{
-    int index = cmb_playlist->currentIndex();
-    return cmb_playlist->itemData(index).toString();
-}
-
-qint64
-Wallphiller::lastChange()
-{
-    if (_last <= 0) _last = QSettings().value("Playlists/LastChange").toUInt();
-    if (_last < 0) _last = 0; //For the future
-    return _last;
-}
-
-void
-Wallphiller::setLastChange(qint64 time)
-{
-    _last = -1;
-    QSettings().setValue("Playlists/LastChange", (uint)time);
-}
-
-bool
-Wallphiller::paused()
-{
-    return _paused;
-}
-
-void
-Wallphiller::setPaused(bool paused)
-{
-    _paused = paused;
-}
-
-QVariant
-Wallphiller::playlistSetting(QString name, QString setting)
-{
-    QString e = encodeName(name);
-    return QSettings().value(QString("%1/%2").arg(e).arg(setting));
-}
-
-void
-Wallphiller::setPlaylistSetting(QString name, QString setting, QVariant value)
-{
-    QString e = encodeName(name);
-    if (e.isEmpty()) return;
-    QSettings().setValue(QString("%1/%2").arg(e).arg(setting), value);
-}
-
-/*
- * Note:
- * This function takes the name of a playlist as argument
- * and scans the content entries of that list,
- * which may even take up to a few minutes (for large directories).
- * It'll also cache the results, so every following call won't take as long.
- * Everytime, the user fiddles with the contents list,
- * the cache should be cleared.
- * Although it's possible to scan every playlist,
- * it probably only makes sense for the currently active list.
- */
-QStringList
-Wallphiller::fileList(QString name)
-{
-    if (name.isEmpty()) name = activeList(); //Default
-    QString e = encodeName(name);
-    if (_files_cache.contains(e)) return _files_cache[e];
-
-    QStringList lst_contents;
-    lst_contents = playlistSetting(name, "Contents").toStringList();
-    QStringList lst_files;
-    foreach (QString entry, lst_contents)
-    {
-        QStringList sublst;
-        if (QFileInfo(entry).isDir())
-        {
-            QDir::Filters flags = QDir::Files | QDir::Hidden;
-            QFileInfoList lst = QDir(entry).entryInfoList(nameFilter(), flags);
-            foreach (QFileInfo entry, lst)
-            {
-                sublst << entry.absoluteFilePath();
-            }
-            //TODO:
-            //This is NOT recursive!
-            //Maybe this would be a place to use the File module...
-            //Setting recursive on/off ?
-        }
-        else if (QFileInfo(entry).isFile())
-        {
-            sublst << entry;
-        }
-        else
-        {
-            //Special stuff (flickr?)
-        }
-        lst_files << sublst;
-    }
-    lst_files.removeDuplicates();
-    if (!lst_files.isEmpty()) _files_cache[e] = lst_files;
-
-    return lst_files;
-}
-
-void
-Wallphiller::resetFileListCache(QString name)
-{
-    QString e = encodeName(name);
-    _files_cache.remove(e);
-}
-
-void
-Wallphiller::resetFileListCache()
-{
-    _files_cache.clear();
-}
-
-int
-Wallphiller::position(QString name)
-{
-    if (name.isEmpty()) name = activeList();
-    return playlistSetting(name, "Position").toInt();
-}
-
-int
-Wallphiller::position(QString name, int position)
-{
-    if (name.isEmpty()) name = activeList();
-    //-1 -> last, 10 -> 1 (if count 10)
-    int count = fileList(name).size(); //This may take long if not cached!
-    if (!count) return -1;
-    while (position >= count) position -= count;
-    while (position < 0) position += count;
-    //assert(position >= 0 && position < count);
-    return position;
-}
-
-int
-Wallphiller::position(int position)
-{
-    return this->position("", position);
-}
-
-void
-Wallphiller::setPosition(QString name, int position)
-{
-    if (name.isEmpty()) name = activeList();
-    setPlaylistSetting(name, "Position", position);
-}
-
-void
-Wallphiller::setPosition(int position)
-{
-    setPosition("", position); //Active list
-}
-
-QString
-Wallphiller::fileAt(int position)
-{
-    position = this->position(position);
-    if (position == -1) return QString();
-    else return fileList()[position];
-}
-
-int
-Wallphiller::interval(QString name)
-{
-    int interval;
-    if (name == activeList())
-    {
-        if (_interval < 0)
-            _interval = playlistSetting(name, "Interval").toInt();
-        if (_interval < 0) _interval = 0;
-        interval = _interval;
-    }
-    else
-    {
-        interval = playlistSetting(name, "Interval").toInt();
-    }
-    return interval;
-}
-
-int
-Wallphiller::intervalNumber(QString name)
-{
-    int interval = this->interval(name);
-    int number = interval;
-    int minute = 60;
-    int hour = minute * 60;
-    int day = hour * 24;
-
-    while (number >= day) number /= day;
-    while (number >= hour) number /= hour;
-    while (number >= minute) number /= minute;
-
-    return number;
-}
-
-char
-Wallphiller::intervalUnit(QString name)
-{
-    int interval = this->interval(name);
-    char unit = 's';
-    int minute = 60;
-    int hour = minute * 60;
-    int day = hour * 24;
-
-    if (interval >= day) unit = 'd';
-    else if (interval >= hour) unit = 'h';
-    else if (interval >= minute) unit = 'm';
-
-    return unit;
-}
-
-void
-Wallphiller::setInterval(QString name, int interval)
-{
-    if (name == activeList()) _interval = -1; //Clear cache
-    if (interval < 0) interval = 0;
-    setPlaylistSetting(name, "Interval", interval);
-}
-
-void
-Wallphiller::changeEvent(QEvent *event)
-{
-    if (!event) return;
-    if (event->type() == QEvent::WindowStateChange)
-    {
-        if (windowState() & Qt::WindowMinimized)
-        {
-            hideInstance();
-        }
-    }
 }
 
 void
 Wallphiller::closeEvent(QCloseEvent *event)
 {
-    if (!_is2ndinstance)
+    //Save settings ONLY if playlist defined
+    //It should generally be possible for the user to remove the config file
+    //as well as temporary files, including the config directory itself.
+    //Simply starting this program without doing anything
+    //should not leave any traces on the system.
+    bool is_playlist = playlist();
+    QStringList current_list = sortedAddresses();
+    bool save_settings = is_playlist;
+    if (save_settings)
     {
-        QSettings().remove("PID");
-        QSettings().setValue("ThumbSize", thumbslider->value());
-        QSettings().setValue("Geometry", saveGeometry());
+        //Save settings
+        QSettings settings;
+
+        //General settings
+        settings.setValue("Geometry", saveGeometry());
+        settings.setValue("Minimized", isMinimized());
+
+        //Playlist
+        if (playlist())
+            settings.setValue("Playlist", playlist()->toByteArray());
+        else
+            settings.remove("Playlist");
+
+        //Remember last wallpaper for next startup
+        int index = position();
+        QString wallpaper_address = current_list.value(index); //or empty
+        settings.setValue("LastWallpaper", wallpaper_address);
+
     }
+    else
+    {
+        //TODO delete config if no playlist selected? -> SettingsDialog...
+
+        //Settings
+        QSettings settings;
+
+        //Clear settings
+        settings.clear(); //TODO not sure if this is good
+
+        //TODO also delete config directory...?
+
+    }
+
+    //Call base implementation
+    QMainWindow::closeEvent(event);
 }
 
 void
 Wallphiller::dragEnterEvent(QDragEnterEvent *event)
 {
-    if (currentList().size()) event->accept();
+    //Do we accept drag&drop? Sure!
+    event->accept();
 }
 
 void
@@ -748,508 +583,709 @@ Wallphiller::dropEvent(QDropEvent *event)
  
     if (data->hasUrls())
     {
-        QStringList paths;
         QList<QUrl> urls = data->urls();
- 
-        for (int i = 0; i < urls.size(); i++)
-        {
-            paths.append(urls.at(i).toLocalFile());
-        }
- 
-        if (paths.size() > 10)
-        {
-            if (QMessageBox::question(this,
-                tr("Add items"),
-                tr("Do you want to add all %1 items?").arg(paths.size()),
-                QMessageBox::Yes | QMessageBox::Cancel) != QMessageBox::Yes)
-                return;
-        }
-        foreach (QString path, paths) addContent(path);
+        createPlaylist(urls);
     }
 }
 
 void
-Wallphiller::checkInstance()
+Wallphiller::checkAndUpdateMemory()
 {
-    if (!QSettings().contains("PID2ndInstance")) return;
 
-    QSettings().remove("PID2ndInstance");
-    showInstance();
-}
-
-void
-Wallphiller::refresh()
-{
-    resetFileListCache();
-    updateComboBox();
-    updatePreviewBox();
-}
-
-void
-Wallphiller::updatePreviewBox()
-{
-    if (_updating_preview_box) return;
-    else _updating_preview_box = true;
-
-    QString name = activeList();
-    bool isactive = !name.isEmpty();
-
-    preview_box->setEnabled(isactive);
-    if (isactive) preview_box->setTitle(tr("Preview - %1").arg(name));
-    else preview_box->setTitle(tr("[Preview]"));
-    //if (!isactive) return; //return - updating_preview_box !
-
-    int count = preview_widgets.size(); //Number of preview thumbnails
-    int middle = (count - 1) / 2; //count is multiple of 2
-    //The current picture will show up in the middle
-    for (int i = 0; i < count; i++)
+    //Read memory
+    QBuffer shmem_buffer_in;
+    shared_memory.lock();
+    shmem_buffer_in.setData((char*)shared_memory.constData(),
+        shared_memory.size());
+    shared_memory.unlock();
+    shmem_buffer_in.open(QBuffer::ReadOnly);
+    QString old_shmem_title;
+    qint64 old_update = 0;
+    qint64 old_pid = 0;
+    bool show_requested = false;
     {
-        PreviewLabel *label = qobject_cast<PreviewLabel*>(preview_widgets[i]);
-        if (!label) continue;
-        label->clear();
-        int index = position() + i - middle;
-        if (i == middle) label->setStyleSheet("background-color:red;");
-        else label->setStyleSheet(" "); //White space!
-        QString file = fileAt(index);
-        QString filename = QFileInfo(file).fileName();
-        label->setToolTip(filename);
-        QImage img(file);
-        if (img.isNull())
-        {
-            //statusBar()->showMessage(
-            //tr("Couldn't load picture: %1").arg(file), 5000);
-            continue;
-        }
-        QSize size = img.size();
-        int w = label->width();
-        size.scale(w, w, Qt::KeepAspectRatio);
-        QPixmap pix1(QPixmap::fromImage(img));
-        if (pix1.isNull())
-        {
-            //statusBar()->showMessage(
-            //tr("Loaded empty picture: %1").arg(file), 5000);
-            continue;
-        }
-        QPixmap pix2(size);
-        QPainter ptr(&pix2);
-        ptr.eraseRect(0, 0, size.width(), size.height());
-        int dist = middle - i;
-        if (dist < 0) dist *= (-1);
-        int opacity = 100 - ((100 / (middle + 1)) * (dist));
-        ptr.setOpacity(((double)opacity) / 100);
-        ptr.drawPixmap(0, 0, size.width(), size.height(), pix1);
-        //label->setScaledContents(true); //Stretch
-        label->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
-        label->setPixmap(pix2);
+        QDataStream stream(&shmem_buffer_in);
+        stream
+            >> old_shmem_title
+            >> old_update
+            >> old_pid
+            >> show_requested;
     }
 
-    _updating_preview_box = false;
-}
-
-void
-Wallphiller::scheduleUpdatePreviewBox()
-{
-    preview_update_timer->stop();
-    preview_update_timer->setSingleShot(true);
-    preview_update_timer->setInterval(100);
-    preview_update_timer->start();
-}
-
-void
-Wallphiller::updateComboBox(QString selected)
-{
-    QStringList lists;
-    lists = playlists();
-    if (selected.isEmpty()) selected = currentList();
-    cmb_playlist->clear();
-    foreach (QString item, lists)
+    //Check show request
+    if (show_requested)
     {
-        QString text = item;
-        if (isListActive(item)) text += " [ACTIVE]";
-        cmb_playlist->addItem(text, item); //Changes selection
-    }
-    cmb_playlist->setCurrentIndex(cmb_playlist->findData(selected));
-    statusBar()->showMessage(tr("Found %1 playlist(s)").
-    arg(lists.size()), 1000);
-}
+        qDebug() << "Instance requested";
 
-void
-Wallphiller::selectList()
-{
-    int index = cmb_playlist->currentIndex();
-    QString list = cmb_playlist->itemData(index).toString();
-    bool selected = index != -1;
-    contents_box->setEnabled(selected);
-    thumbnails_box->setEnabled(selected);
-    settings_box->setEnabled(selected);
-    if (!selected)
+        showInstance();
+    }
+
+    //Update memory
+    //Timestamp must be updated (heartbeat)
+    qint64 current_time = QDateTime::currentMSecsSinceEpoch() / 1000; //sec
+    QBuffer shmem_buffer_out;
+    shmem_buffer_out.open(QBuffer::ReadWrite);
     {
-        setWindowTitle(PROGRAM);
+        QDataStream stream(&shmem_buffer_out);
+        stream << old_shmem_title; //unchanged
+        stream << current_time; //update time
+        stream << old_pid; //unchanged
+        stream << (bool)false; //show request flag off
     }
-    else
-    {
-        setWindowTitle(QString("%1 - %2").arg(PROGRAM).arg(list));
-        if (isListActive())
-        {
-            btn_activatelist->setText(tr("Active list"));
-            QFont font = btn_activatelist->font();
-            font.setBold(true);
-            btn_activatelist->setFont(font);
-        }
-        else
-        {
-            btn_activatelist->setText(tr("Set active"));
-            QFont font = btn_activatelist->font();
-            font.setBold(false);
-            btn_activatelist->setFont(font);
-        }
-    }
-    resetContentsBox();
-    btn_renamelist->setEnabled(false); //TODO
-    btn_removelist->setEnabled(selected);
-    btn_activatelist->setEnabled(selected);
-
-    int number = intervalNumber(currentList());
-    char unit = intervalUnit(currentList());
-    txt_intval->setText(QString::number(number));
-    cmb_intval->setCurrentIndex(cmb_intval->findData(unit));
+    shared_memory.lock();
+    char *to = (char*)shared_memory.data();
+    const char *from = shmem_buffer_out.data().data();
+    memcpy(to, from, shared_memory.size());
+    shared_memory.unlock();
 
 }
 
 void
-Wallphiller::selectList(int index)
+Wallphiller::playlistNameChanged(const QString &name)
 {
-    selectList();
+    QString title(tr("Playlist active"));
+    if (!name.isEmpty()) title += ": " + name;
+    txt_playlist_title->setText(title);
 }
 
-void
-Wallphiller::selectList(const QString &list)
+QStringList
+Wallphiller::formatFilters()
+const
 {
-    int index = cmb_playlist->findData(list);
-    selectList(index);
+    QStringList formats = _read_formats; //"jpg", "png"
+    QStringList filters; //"*.jpg", "*.png"
+    foreach (QString format, formats)
+        filters << QString("*.%1").arg(format);
+    return filters;
 }
 
-void
-Wallphiller::addList()
+Playlist*
+Wallphiller::playlist()
+const
 {
-    QStringList list = playlists();
-    QString name;
-    QString oldname;
-
-    do
-    {
-        oldname = QInputDialog::getText(this,
-            tr("Add playlist"),
-            tr("Enter a name for the new playlist."),
-            QLineEdit::Normal,
-            oldname);
-        if (oldname.isEmpty()) return;
-        else name = oldname;
-        if (list.contains(name))
-        {
-            QMessageBox::critical(this,
-                tr("Invalid name"),
-                tr("This name is taken."));
-        }
-        else
-        {
-            oldname.clear();
-        }
-    }
-    while (oldname.size());
-
-    list << name;
-    setPlaylists(list);
-    setPlaylistSetting(name, "Contents", QVariant());
-
-    updateComboBox(name);
+    return _current_playlist;
 }
 
-void
-Wallphiller::renameList()
+int
+Wallphiller::cacheLimit()
+const
 {
-    //Copy all values, remove key group
+    return _configured_thumbnail_cache_limit;
 }
 
-void
-Wallphiller::removeList()
+int
+Wallphiller::intervalValue()
+const
 {
-    QString name = currentList();
-    QString e = encodeName(name);
-    if (name.isEmpty()) return;
-    if (QMessageBox::question(this,
-        tr("Remove playlist"),
-        tr("Do you want to remove this playlist?\n%1").
-        arg(name),
-        QMessageBox::Yes | QMessageBox::No) != QMessageBox::Yes) return;
-    QStringList list = playlists();
-    list.removeAll(name);
-    setPlaylists(list);
-    QSettings().remove(e);
-
-    updateComboBox();
+    int value = _configured_interval_value;
+    return value;
 }
 
-void
-Wallphiller::activateList()
+QString
+Wallphiller::intervalUnit()
+const
 {
-    QString name = currentList();
-    if (name.isEmpty()) return;
-    if (!isListActive())
-    {
-        if (QMessageBox::question(this,
-            tr("Activate list"),
-            tr("Do you want to activate this list?"),
-            QMessageBox::Yes | QMessageBox::No) != QMessageBox::Yes) return;
-        setListActive(name);
-    }
-    else
-    {
-        if (QMessageBox::question(this,
-            tr("Deactivate list"),
-            tr("This is the active list. Do you want to deactivate it?"),
-            QMessageBox::Yes | QMessageBox::No) != QMessageBox::Yes) return;
-        setListActive();
-    }
-    refresh();
+    QString unit = _configured_interval_unit;
+    if (unit.isEmpty() || !intervalValue()) unit = "ONCE";
+    return unit;
 }
 
-void
-Wallphiller::resetContentsBox()
+int
+Wallphiller::interval()
+const
 {
-    QString name = currentList();
-    QStringList lst;
-    if (name.size()) lst = playlistSetting(name, "Contents").toStringList();
-    contents_model->setStringList(lst);
+    int seconds = 0;
+
+    int value = intervalValue();
+    QString unit = intervalUnit();
+    if (unit == "SECONDS")
+        seconds = value;
+    else if (unit == "MINUTES")
+        seconds = value * 60;
+    else if (unit == "HOURS")
+        seconds = value * 60 * 60;
+    else if (unit == "NYMINUTES")
+        seconds = value * 12;
+    else if (unit == "NANOCENTURIES")
+        seconds = value * ((52 * 60) + 36);
+
+    if (seconds < 0) seconds = 0; //still not enough overflow protection
+
+    return seconds;
 }
 
-void
-Wallphiller::addContent(QString content)
+int
+Wallphiller::position()
+const
 {
-    if (content.isEmpty()) return;
-    if (!QFileInfo(content).isDir() &&
-        !QFileInfo(content).isFile())
-    {
-        QMessageBox::critical(this,
-            tr("Invalid source"),
-            tr("This is not a valid source:\n%1").
-            arg(content));
-        return;
-    }
-    QString name = currentList();
-    QStringList lst;
-    lst = playlistSetting(name, "Contents").toStringList();
-    if (lst.contains(content)) return;
-    lst << content;
-    setPlaylistSetting(name, "Contents", lst);
-
-    resetFileListCache();
-    resetContentsBox();
+    return _position;
 }
 
-void
-Wallphiller::addContent()
+QStringList
+Wallphiller::sortedAddresses()
+const
 {
-    addContent(QInputDialog::getText(this,
-        tr("Add content to playlist"),
-        tr("Enter a valid path.")));
+    return _sorted_picture_addresses;
 }
 
-void
-Wallphiller::addFolder()
+DE
+Wallphiller::desktopEnvironment()
+const
 {
-    addContent(QFileDialog::getExistingDirectory(this,
-        tr("Add folder to playlist")));
+    return _de;
 }
 
-void
-Wallphiller::removeContent()
+QString
+Wallphiller::changeRoutine()
+const
 {
-    QString name = currentList();
-    if (name.isEmpty()) return;
-    QModelIndex index = contents_list->currentIndex();
-    if (!index.isValid()) return;
-    QString content = contents_model->data(index, Qt::DisplayRole).toString();
-    if (content.isEmpty()) return;
-    if (QMessageBox::question(this,
-        tr("Remove content from playlist"),
-        tr("Do you want to remove this item from the playlist?\n%1").
-        arg(content),
-        QMessageBox::Yes | QMessageBox::No)
-        != QMessageBox::Yes) return;
-    QStringList lst;
-    lst = playlistSetting(name, "Contents").toStringList();
-    lst.removeAll(content);
-    setPlaylistSetting(name, "Contents", lst);
-
-    resetFileListCache();
-    resetContentsBox();
+    return _change_routine;
 }
 
-void
-Wallphiller::navigateToSelected(const QModelIndex &index)
+QString
+Wallphiller::changeRoutineCommand()
+const
 {
-    if (!index.isValid()) return;
-    QString path;
-    path = contents_list->model()->data(index).toString();
-    if (!QDir(path).exists()) return;
-    thumbnailbox->navigateTo(path);
-}
-
-void
-Wallphiller::updateThumbButtons()
-{
-    btn_addfile->setEnabled(thumbnailbox->isSelected());
-}
-
-void
-Wallphiller::addThumbFile()
-{
-    QString file = thumbnailbox->itemPath();
-    if (file.size()) addContent(file);
-}
-
-void
-Wallphiller::saveInterval()
-{
-    int interval;
-
-    interval = txt_intval->text().toInt();
-    if (interval < 0) interval = 0;
-
-    switch (cmb_intval->itemData(cmb_intval->currentIndex()).toInt())
-    {
-        case 'd': interval *= 24;
-        case 'h': interval *= 60;
-        case 'm': interval *= 60;
-    }
-
-    setInterval(currentList(), interval);
-}
-
-void
-Wallphiller::saveInterval(int index)
-{
-    saveInterval();
-}
-
-void
-Wallphiller::toggleMode()
-{
-    bool is_auto = rad_auto->isChecked();
-    QFont font;
-    font = rad_auto->font();
-    font.setBold(is_auto);
-    rad_auto->setFont(font);
-    lbl_autoinfo->setEnabled(is_auto);
-    font = rad_command->font();
-    font.setBold(!is_auto);
-    rad_command->setFont(font);
-    txt_command->setEnabled(!is_auto);
-    if (!is_auto) txt_command->setFocus();
-
-    QSettings().setValue("Command", txt_command->text());
-}
-
-void
-Wallphiller::toggleMode(bool checked)
-{
-    toggleMode();
+    return _change_routine_command;
 }
 
 void
 Wallphiller::hideInstance()
 {
-    //hide(); //Too quick (will reappear)
+    //hide(); //too early (will reappear)
     QTimer::singleShot(500, this, SLOT(hide()));
 }
 
 void
 Wallphiller::showInstance()
 {
-    raise();
-    show();
-    activateWindow();
+    show(); //make this visible (again)
+    setWindowState( //unminimize
+        (windowState() & ~Qt::WindowMinimized) | Qt::WindowActive);
+    raise(); //for Mac
+    activateWindow(); //for Windows
 }
 
 void
-Wallphiller::setCurrentWallpaper()
+Wallphiller::handleTrayClicked(QSystemTrayIcon::ActivationReason reason)
 {
-    QString file = fileAt(position());
-    QString command = txt_command->text();
-    if (command.size())
+    showInstance();
+    tray_icon->hide();
+}
+
+void
+Wallphiller::minimizeToTray()
+{
+    tray_icon->show();
+    hide();
+}
+
+void
+Wallphiller::openSettingsWindow()
+{
+    if (settings_dialog)
     {
-        command.replace("$FILE", file);
-        system(command.toStdString().c_str()); //Dangerous / could be abused
+        settings_dialog->show();
+        return;
+    }
+
+    settings_dialog = new SettingsDialog(this);
+    settings_dialog->show();
+
+}
+
+void
+Wallphiller::applyChangeRoutine(const QString &routine,
+    const QString &command)
+{
+    QString new_routine(routine);
+    QString new_command(command);
+
+    if (new_routine == "command")
+    {
     }
     else
     {
-        setWallpaper(file);
+        new_routine = "auto";
     }
+
+    _change_routine = new_routine;
+    _change_routine_command = new_command;
+
+    QSettings settings;
+    settings.setValue("ChangeRoutine", new_routine);
+    settings.setValue("ChangeRoutineCommand", new_command);
+
 }
 
 void
-Wallphiller::select(int index)
+Wallphiller::applyInterval(int value, QString unit)
 {
-    qint64 current_time;
-    setPosition(index);
-    setCurrentWallpaper();
-    updatePreviewBox();
-    current_time = QDateTime::currentMSecsSinceEpoch() / 1000;
-    setLastChange(current_time);
+    //Apply interval
+    _configured_interval_value = value;
+    _configured_interval_unit = unit;
+    int seconds = interval(); //new timeout
+    tmr_next_wallpaper->setInterval(seconds * 1000);
+
+    //Start or stop timer if settings have changed
+    if (seconds && !tmr_next_wallpaper->isActive())
+    {
+        //Timeout configured but timer not running yet
+        tmr_next_wallpaper->start();
+    }
+    else if (!seconds && tmr_next_wallpaper->isActive())
+    {
+        //Timeout not configured but timer still running
+        tmr_next_wallpaper->stop();
+    }
+
+    //Save interval
+    QSettings settings;
+    settings.setValue("IntervalValue", value);
+    settings.setValue("IntervalUnit", unit);
+
+}
+
+void
+Wallphiller::applyCacheLimit(int max_mb)
+{
+    //Apply limit
+    if (max_mb < 0) max_mb = 0;
+    _configured_thumbnail_cache_limit = max_mb;
+    thumbnailbox->setCacheLimit(max_mb);
+
+    //Save limit
+    QSettings settings;
+    settings.setValue("CacheLimit", max_mb);
+
+}
+
+void
+Wallphiller::generateList()
+{
+    //Get generated list
+    Playlist *playlist = this->playlist();
+    playlist->generate(Playlist::Order::Random);
+    QStringList new_list = playlist->pictureAddressList();
+
+    //Apply list
+    _sorted_picture_addresses = new_list;
+
+    //Set thumbnails
+    //Type is External to load images in the background
+    //The Playlist actually does the loading (only it knows how)
+    thumbnailbox->setList(_sorted_picture_addresses,
+        ThumbnailBox::SourceType::External);
+
+    //TODO notify if playlist empty but don't show annoying message box
+
+}
+
+void
+Wallphiller::setPlaylist(Playlist *playlist, int start_index)
+{
+    //Stop timer
+    tmr_next_wallpaper->stop();
+
+    //Clear thumbnail box
+    thumbnailbox->clear();
+
+    //Delete old playlist
+    if (_current_playlist) _current_playlist->deleteLater();
+    _current_playlist = 0;
+    _position = -1;
+    _sorted_picture_addresses.clear();
+
+    //Reset title
+    txt_playlist_title->setText(tr("(No playlist defined)"));
+
+    //Done if no new playlist provided
+    if (!playlist) return;
+
+    //Set playlist
+    _current_playlist = playlist;
+
+    //Update title (include playlist name, if defined)
+    connect(playlist,
+            SIGNAL(nameChanged(const QString&)),
+            SLOT(playlistNameChanged(const QString&)));
+    playlistNameChanged(playlist->name());
+
+    //Connect ThumbnailBox to Playlist
+    //Send image requests from thumbnailbox to new playlist
+    //Forward image responses from playlist to thumbnailbox
+    connect(thumbnailbox,
+            SIGNAL(imageRequested(const QString&)),
+            playlist,
+            SLOT(loadImageInBackground(const QString&)));
+    connect(playlist,
+            SIGNAL(imageLoaded(const QString&, const QImage&)),
+            thumbnailbox,
+            SLOT(cacheImage(const QString&, const QImage&)));
+
+    //Generate list and fill ThumbnailBox
+    generateList();
+
+    //Start with first (or specified) wallpaper
+    //If no change interval is configured,
+    //this will be the only automatic wallpaper change.
+    selectWallpaper(start_index);
+
+    //Start timer (unless disabled)
+    //It might make sense to keep the timer disabled if you only
+    //want to change your wallpaper on startup.
+    int interval = this->interval(); //seconds
+    if (interval)
+    {
+        tmr_next_wallpaper->setInterval(interval * 1000);
+        tmr_next_wallpaper->start();
+    }
+
+}
+
+void
+Wallphiller::createPlaylist(const QList<QUrl> &addresses, bool empty)
+{
+    //Formats
+    QStringList formats = this->formatFilters();
+
+    //Create playlist
+    Playlist *old_playlist = playlist();
+    Playlist *playlist;
+    if (empty || !old_playlist)
+        playlist = new Playlist(formats, this);
+    else
+        playlist = new Playlist(*old_playlist, this);
+
+    //Fill playlist
+    foreach (QUrl address, addresses)
+    {
+        playlist->add(address);
+    }
+
+    //Set new playlist
+    setPlaylist(playlist);
+
+}
+
+void
+Wallphiller::createPlaylistWithFullDirectory(bool empty)
+{
+    //Ask for directory
+    QStringList formats = this->formatFilters();
+    QString pwd;
+    QString path;
+    path = QFileDialog::getExistingDirectory(this,
+        tr("Select wallpaper directory"),
+        pwd,
+        QFileDialog::ShowDirsOnly | QFileDialog::DontResolveSymlinks);
+    if (path.isEmpty()) return; //abort
+
+    //Create playlist
+    Playlist *old_playlist = playlist();
+    Playlist *playlist;
+    if (empty || !old_playlist)
+        playlist = new Playlist(formats, this);
+    else
+        playlist = new Playlist(*old_playlist, this);
+
+    //Add directory to playlist
+    playlist->addDirectory(path, true); //recursive
+
+    //Set new playlist
+    setPlaylist(playlist);
+    playlist->setName(QDir(path).dirName());
+
+}
+
+void
+Wallphiller::createPlaylistWithShallowDirectory(bool empty)
+{
+    //Ask for directory
+    QStringList formats = this->formatFilters();
+    QString pwd;
+    QString path;
+    path = QFileDialog::getExistingDirectory(this,
+        tr("Select wallpaper directory"),
+        pwd,
+        QFileDialog::ShowDirsOnly | QFileDialog::DontResolveSymlinks);
+    if (path.isEmpty()) return; //abort
+
+    //Create playlist
+    Playlist *old_playlist = playlist();
+    Playlist *playlist;
+    if (empty || !old_playlist)
+        playlist = new Playlist(formats, this);
+    else
+        playlist = new Playlist(*old_playlist, this);
+
+    //Add directory to playlist
+    playlist->addDirectory(path, false); //non-recursive
+
+    //Set new playlist
+    setPlaylist(playlist);
+    playlist->setName(QDir(path).dirName());
+
+}
+
+void
+Wallphiller::createPlaylistWithFiles(bool empty)
+{
+    //Ask for picture files
+    QStringList formats = this->formatFilters();
+    QString pwd;
+    QStringList files;
+    QString filter = QString("%1 (%2)").
+        arg(tr("Images")).
+        arg(formats.join(" "));
+    files = QFileDialog::getOpenFileNames(this,
+        tr("Select wallpaper files"),
+        pwd,
+        filter,
+        0,
+        QFileDialog::DontResolveSymlinks);
+    if (files.isEmpty()) return; //abort
+
+    //Create playlist
+    Playlist *old_playlist = playlist();
+    Playlist *playlist;
+    if (empty || !old_playlist)
+        playlist = new Playlist(formats, this);
+    else
+        playlist = new Playlist(*old_playlist, this);
+
+    //Add single files to playlist
+    playlist->addFiles(files);
+
+    //Set new playlist
+    setPlaylist(playlist);
+
+}
+
+void
+Wallphiller::unloadPlaylist()
+{
+    setPlaylist(0);
+}
+
+void
+Wallphiller::setWallpaper(const QString &file_path)
+{
+    qDebug() << "Setting wallpaper...";
+
+    //Check file path
+    if (file_path.isEmpty() || !QFile::exists(file_path))
+    {
+        qWarning() << "Invalid file!";
+        qWarning() << file_path;
+        return;
+    }
+
+    //File uri (file://...)
+    QString file_uri = QUrl::fromLocalFile(file_path).toString();
+
+    //Quote because this will be used in a system() call
+    QString file_path_escaped = QString(file_path).replace("'", "\'");
+    QString file_uri_escaped = QString(file_uri).replace("'", "\'");
+    QString file_path_quoted = QString("'%1'").arg(file_path_escaped);
+    QString file_uri_quoted = QString("'%1'").arg(file_uri_escaped);
+
+    //Configured wallpaper change routine
+    DE de = DE::None;
+    QString cmd;
+    if (changeRoutine() == "command")
+    {
+        cmd = changeRoutineCommand();
+    }
+    else
+    {
+        de = desktopEnvironment();
+    }
+
+    //Input and system():
+    //This program will NOT blindly strcat the input string to some possibly
+    //user-defined custom command and pass it to system().
+    //This could be pretty dangerous.
+    //Although it's impossible to protect a user from his own stupid input,
+    //we can at least try to do some very basic sanity checking.
+    //For example, only one command should be executed, so the user-defined
+    //command string should not contain a semicolon.
+    //Also, we might replace the uri variable (like %u)
+    //with the path wrapped in single quotes to prevent
+    //whitespace-related crap.
+    //Also, even though we normally use a temporary file with a hardcoded
+    //name like "wallpaper.png", it should not be possible to cause harm
+    //by using a filename like "file ;badcommand".
+    //However, as long as the filename is hardcoded,
+    //all we need to check is the user-defined command.
+
+    //Command expansion:
+    //%u = single uri
+    //%f = single file path
+
+    //Call configured change routine
+    bool done = false;
+    bool no_action = false;
+    switch (de)
+    {
+        case DE::None:
+        no_action = cmd.isEmpty();
+        break;
+
+        case DE::Gnome:
+        cmd = "gsettings set org.gnome.desktop.background picture-uri \%u";
+        break;
+
+        case DE::Mate:
+        cmd = "gsettings set org.mate.desktop.background picture-uri \%u";
+        break;
+
+        case DE::Cinnamon:
+        cmd = "gsettings set org.cinnamon.desktop.background picture-uri \%u";
+        break;
+
+        //TODO support more desktop environments
+
+        //case DE::Windows:
+        //...
+        //done = true;
+        //break;
+
+        default:
+        no_action = true;
+        break;
+    }
+
+    //Run command
+    if (!done && !cmd.isEmpty())
+    {
+        //Complete command
+        cmd.replace("\%u", file_uri_quoted);
+        cmd.replace("\%f", file_path_quoted);
+
+        //Run
+        //We've alredy made sure that the file path argument is quoted.
+        //The change command itself could be a user-defined custom command,
+        //which could be pretty much anything.
+        int code = system(cmd.toUtf8().constData());
+        if (code)
+        {
+            qWarning() << "Error, wallpaper change command returned" << code;
+        }
+        done = true;
+    }
+
+    //Anything to do
+    if (no_action)
+    {
+        //TODO graphical alert
+        qWarning() << "No configured command, no action!";
+    }
+
+}
+
+void
+Wallphiller::selectWallpaper(int index)
+{
+    //Poor people's mutex
+    //static bool is_running = false;
+
+    //Check index
+    QStringList list(sortedAddresses()); //sorted when list (re)started
+    if (index < 0 || index >= list.count()) return; //index out of bounds
+
+    //Abort if not loaded
+    if (!playlist()) return;
+
+    //Set index
+    _position = index;
+
+    //Update thumbnail selection but prevent infinite loop!
+    //Selecting a thumbnail will trigger this function/slot!
+    thumbnailbox->select(index, false); //no signal, prevent infinite loop!
+    thumbnailbox->ensureItemVisible(index);
+
+    //Load picture
+    QString address = list.at(index); //local path or remote address
+    QImage image = playlist()->loadImage(address);
+    if (image.isNull())
+    {
+        //Picture empty, abort
+        qWarning() <<
+            "Picture empty (probably not found or error retrieving)";
+        return;
+    }
+
+    //Save picture as temporary file
+    QSettings settings;
+    QString config_dir = QFileInfo(settings.fileName()).absolutePath();
+    QList<QByteArray> write_formats = QImageWriter::supportedImageFormats();
+    QString suffix;
+    if (write_formats.contains("jpg"))
+        suffix = ".jpg";
+    else if (write_formats.contains("png"))
+        suffix = ".png";
+    else if (write_formats.contains("bmp"))
+        suffix = ".bmp";
+    else if (write_formats.contains("tif"))
+        suffix = ".tif";
+    QString temporary_file;
+    if (!suffix.isEmpty())
+        temporary_file = config_dir + "/wallpaper" + suffix;
+    if (temporary_file.isEmpty() || !image.save(temporary_file))
+    {
+        qWarning() << "Saving temporary image file failed!";
+        qDebug() << temporary_file;
+        return;
+    }
+
+    //Set wallpaper
+    setWallpaper(temporary_file);
+
+    //Restart timer (if running)
+    //This is done on purpose so that selecting a wallpaper manually
+    //will reset the clock to keep that picture on display the same time
+    //as every other picture.
+    //Otherwise, it would feel unnatural if the wallpaper is changed again
+    //five seconds after one has been selected manually.
+    if (tmr_next_wallpaper->isActive())
+    {
+        tmr_next_wallpaper->start();
+    }
+
 }
 
 void
 Wallphiller::previous()
 {
-    select(position() - 1);
-}
+    int new_position = position() - 1;
+    if (new_position == -1)
+    {
+        //End of list
+        //Regenerate list
+        generateList();
 
-void
-Wallphiller::pause()
-{
-    setPaused(!paused());
-    if (paused()) btn_pause->setText(tr("Continue"));
-    else btn_pause->setText(tr("Pause"));
+        //Continue at end
+        new_position = _sorted_picture_addresses.count() - 1;
+    }
+
+    selectWallpaper(new_position);
 }
 
 void
 Wallphiller::next()
 {
-    select(position() + 1);
-}
-
-void
-Wallphiller::update()
-{
-    //Things that should be cached (timer):
-    //lastChange()
-    //activeList()
-    //interval()
-    qint64 current_time = QDateTime::currentMSecsSinceEpoch() / 1000;
-    qint64 last_change = lastChange();
-    qint64 interval = this->interval(activeList());
-    qint64 tdiff = current_time - last_change;
-    qint64 tremaining = interval - tdiff;
-    if (tremaining < 0) tremaining = 0;
-    bool running = activeList().size() && !paused() && interval;
-
-    if (!running)
+    int new_position = position() + 1;
+    if (new_position == sortedAddresses().count())
     {
-        btn_next->setText(tr("Next"));
-        return;
+        //End of list
+        //Regenerate list
+        generateList();
+
+        //Continue at beginning
+        new_position = 0;
     }
 
-    if (tremaining)
-    {
-        QString str_rem = QString::number(tremaining);
-        btn_next->setText(tr("Next - %1").arg(str_rem));
-    }
-    else
-    {
-        btn_next->setText(tr("Next - ..."));
-        next();
-    }
-
+    selectWallpaper(new_position);
 }
 

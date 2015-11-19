@@ -26,7 +26,14 @@ CFLAGS+=$(ADDCFLAGS)
 LDFLAGS+=$(LDFLAGS_READLINE)
 LDFLAGS+=$(ADDLDFLAGS)
 
-MODULES=main wallphiller thumbnailbox
+MODULES+=main
+MODULES+=wallphiller
+MODULES+=settingsdialog
+MODULES+=thumbnailbox
+MODULES+=playlist
+MODULES+=scan
+MODULES+=res
+
 HEADERS=$(MODULES:%=$(INCDIR)/%.hpp)
 SOURCES=$(MODULES:=.cpp)
 SOURCES_QT=$(MODULES:=.moc.cpp)

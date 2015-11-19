@@ -1,11 +1,23 @@
+/*
+ * Wallphiller
+ * ===========
+ *
+ * A simple tool that changes your desktop wallpaper.
+ * Supports several common desktop environments.
+ *
+ */
+
 #ifndef WALLPHILLER_HPP
 #define WALLPHILLER_HPP
 
 #include <iostream>
+#include <cassert>
+#include <cstdlib>
 
 #if defined(_WIN32)
 #include <windows.h>
 #endif
+#include <csignal>
 
 #include <QApplication>
 #include <QMainWindow>
@@ -31,34 +43,38 @@
 #include <QDateTime>
 #include <QScrollArea>
 #include <QUrl>
-
-#include <csignal>
+#include <QSharedMemory>
+#include <QBuffer>
+#include <QToolButton>
+#include <QPixmap>
+#include <QImageReader>
+#include <QImageWriter>
+#include <QDialogButtonBox>
+#include <QProcessEnvironment>
+#include <QSystemTrayIcon>
+#include <QSpinBox>
+#include <QFormLayout>
 
 #include "version.hpp"
 
+#include "settingsdialog.hpp"
 #include "thumbnailbox.hpp"
+#include "playlist.hpp"
 
-class ThumbnailBox;
-
-class PreviewLabel : public QLabel
+enum class DE
 {
-    Q_OBJECT
-
-public:
-
-    PreviewLabel(QWidget *parent = 0);
-
-private slots:
-
-    void
-    resizeEvent(QResizeEvent *event);
-
-signals:
-
-    void
-    resized();
-
+    None,
+    Gnome,
+    Mate,
+    KDE,
+    Cinnamon,
+    Xfce,
+    Lxde,
+    Windows
 };
+
+class SettingsDialog;
+class ThumbnailBox;
 
 class Wallphiller : public QMainWindow
 {
@@ -66,236 +82,91 @@ class Wallphiller : public QMainWindow
     
 public:
 
-    static QString
-    wallpaperSetterInfo();
-
-    static void
-    setWallpaper(QString file);
-
     Wallphiller();
 
-    static Wallphiller*
-    instanceptr;
+    ~Wallphiller();
 
 private:
+
+    static Wallphiller
+    *instanceptr;
 
     static void
     sig(int signal);
 
-    bool
-    _is2ndinstance;
-
-    QGroupBox
-    *preview_box;
-
-    QList<QWidget*>
-    preview_widgets;
-
-    bool
-    _updating_preview_box;
+    QSharedMemory
+    shared_memory;
 
     QTimer
-    *preview_update_timer;
-
-    QPushButton
-    *btn_pause;
-
-    QPushButton
-    *btn_next;
-
-    QPushButton
-    *btn_previous;
-
-    QSplitter
-    *splitter;
-
-    QScrollArea
-    *scrollarea;
-
-    QGroupBox
-    *playlist_box;
-
-    QComboBox
-    *cmb_playlist;
-
-    QPushButton
-    *btn_addlist;
-
-    QPushButton
-    *btn_renamelist;
-
-    QPushButton
-    *btn_removelist;
-
-    QPushButton
-    *btn_activatelist;
-
-    QGroupBox
-    *contents_box;
-
-    QStringListModel
-    *contents_model;
-
-    QListView
-    *contents_list;
-
-    QPushButton
-    *btn_addcnt;
-
-    QPushButton
-    *btn_addfolder;
-
-    QPushButton
-    *btn_removecnt;
-
-    QGroupBox
-    *thumbnails_box;
+    *tmr_check_shared_memory;
 
     QLineEdit
-    *txt_pathbox;
+    *txt_playlist_title;
+
+    QToolButton
+    *btn_playlist;
 
     ThumbnailBox
     *thumbnailbox;
 
     QSlider
-    *thumbslider;
+    *sld_thumb_size;
 
     QPushButton
-    *btn_addfile;
+    *btn_settings;
 
-    QGroupBox
-    *settings_box;
+    QPushButton
+    *btn_tray;
 
-    QLineEdit
-    *txt_intval;
+    QPushButton
+    *btn_hide;
 
-    QComboBox
-    *cmb_intval;
-
-    QGroupBox
-    *config_box;
-
-    QRadioButton
-    *rad_auto;
-
-    QRadioButton
-    *rad_command;
-
-    QLabel
-    *lbl_autoinfo;
-
-    QLineEdit
-    *txt_command;
+    QPushButton
+    *btn_quit;
 
     QTimer
-    *tmr_instance;
-
-    QTimer
-    *timer;
-
-    QMap<QString, QStringList>
-    _files_cache;
-
-    QString
-    _active;
+    *tmr_next_wallpaper;
 
     int
-    _interval;
+    _configured_interval_value;
 
-    qint64
-    _last;
+    QString
+    _configured_interval_unit;
 
-    bool
-    _paused;
+    QSystemTrayIcon
+    *tray_icon;
+
+    int
+    _configured_thumbnail_cache_limit;
+
+    void
+    setPlaylistMenu();
 
     QStringList
-    playlists();
+    _read_formats;
 
-    void
-    setPlaylists(QStringList lists);
+    Playlist
+    *_current_playlist;
+
+    int
+    _position;
 
     QStringList
-    nameFilter();
+    _sorted_picture_addresses;
+
+    QPointer<SettingsDialog>
+    settings_dialog;
+
+    DE
+    _de;
 
     QString
-    encodeName(QString name = "");
+    _change_routine;
 
     QString
-    decodeName(QString name = "");
-
-    QString
-    activeList();
-
-    bool
-    isListActive(QString name = "");
-
-    void
-    setListActive(QString name = "");
-
-    QString
-    currentList();
-
-    qint64
-    lastChange();
-
-    void
-    setLastChange(qint64 time);
-
-    bool
-    paused();
-
-    void
-    setPaused(bool paused);
-
-    QVariant
-    playlistSetting(QString name, QString setting);
-
-    void
-    setPlaylistSetting(QString name, QString setting, QVariant value);
-
-    QStringList
-    fileList(QString name = "");
-
-    void
-    resetFileListCache(QString name);
-
-    void
-    resetFileListCache();
-
-    int
-    position(QString name = "");
-
-    int
-    position(QString name, int position);
-
-    int
-    position(int position);
-
-    void
-    setPosition(QString name, int position);
-
-    void
-    setPosition(int position);
-
-    QString
-    fileAt(int position);
-
-    int
-    interval(QString name);
-
-    int
-    intervalNumber(QString name);
-
-    char
-    intervalUnit(QString name);
-
-    void
-    setInterval(QString name, int interval);
+    _change_routine_command;
 
 private slots:
-
-    void
-    changeEvent(QEvent *event);
 
     void
     closeEvent(QCloseEvent *event);
@@ -307,76 +178,45 @@ private slots:
     dropEvent(QDropEvent *event);
 
     void
-    checkInstance();
+    checkAndUpdateMemory();
 
     void
-    refresh();
+    playlistNameChanged(const QString &name);
 
-    void
-    updatePreviewBox();
+public:
 
-    void
-    scheduleUpdatePreviewBox();
+    QStringList
+    formatFilters() const;
 
-    void
-    updateComboBox(QString selected = "");
+    Playlist*
+    playlist() const;
 
-    void
-    selectList();
+    int
+    cacheLimit() const;
 
-    void
-    selectList(int index);
+    int
+    intervalValue() const;
 
-    void
-    selectList(const QString &list);
+    QString
+    intervalUnit() const;
 
-    void
-    addList();
+    int
+    interval() const;
 
-    void
-    renameList();
+    int
+    position() const;
 
-    void
-    removeList();
+    QStringList
+    sortedAddresses() const;
 
-    void
-    activateList();
+    DE
+    desktopEnvironment() const;
 
-    void
-    resetContentsBox();
+    QString
+    changeRoutine() const;
 
-    void
-    addContent(QString content);
-
-    void
-    addContent();
-
-    void
-    addFolder();
-
-    void
-    removeContent();
-
-    void
-    navigateToSelected(const QModelIndex &index);
-
-    void
-    updateThumbButtons();
-
-    void
-    addThumbFile();
-
-    void
-    saveInterval();
-
-    void
-    saveInterval(int index);
-
-    void
-    toggleMode();
-
-    void
-    toggleMode(bool checked);
+    QString
+    changeRoutineCommand() const;
 
 public slots:
 
@@ -387,22 +227,56 @@ public slots:
     showInstance();
 
     void
-    setCurrentWallpaper();
+    handleTrayClicked(QSystemTrayIcon::ActivationReason reason);
 
     void
-    select(int index);
+    minimizeToTray();
+
+    void
+    openSettingsWindow();
+
+    void
+    applyChangeRoutine(const QString &routine, const QString &command);
+
+    void
+    applyInterval(int value, QString unit);
+
+    void
+    applyCacheLimit(int max_mb);
+
+    void
+    generateList();
+
+    void
+    setPlaylist(Playlist *playlist, int start_index = 0);
+
+    void
+    createPlaylist(const QList<QUrl> &addresses, bool empty = false);
+
+    void
+    createPlaylistWithFullDirectory(bool empty = false);
+
+    void
+    createPlaylistWithShallowDirectory(bool empty = false);
+
+    void
+    createPlaylistWithFiles(bool empty = false);
+
+    void
+    unloadPlaylist();
+
+    void
+    setWallpaper(const QString &file_path);
+
+    void
+    selectWallpaper(int index);
 
     void
     previous();
 
     void
-    pause();
-
-    void
     next();
 
-    void
-    update();
 };
 
 #endif

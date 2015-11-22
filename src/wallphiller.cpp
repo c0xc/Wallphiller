@@ -1368,12 +1368,20 @@ Wallphiller::setWallpaper(const QString &file_path)
         cmd = "gsettings set org.cinnamon.desktop.background picture-uri \%u";
         break;
 
-        //TODO support more desktop environments
+        //TODO XFCE
+        //TODO LXDE
+        //TODO KDE
 
-        //case DE::Windows:
-        //...
-        //done = true;
-        //break;
+        case DE::Windows:
+        #if defined(_WIN32)
+        SystemParametersInfo(
+            SPI_SETDESKWALLPAPER,
+            0,
+            file_path.toLatin1().data(),
+            SPIF_SENDWININICHANGE | SPIF_UPDATEINIFILE);
+        done = true;
+        #endif
+        break;
 
         default:
         no_action = true;
@@ -1445,14 +1453,16 @@ Wallphiller::selectWallpaper(int index)
     QString config_dir = QFileInfo(settings.fileName()).absolutePath();
     QList<QByteArray> write_formats = QImageWriter::supportedImageFormats();
     QString suffix;
+    #if defined(_WIN32)
+    suffix = ".bmp";
+    #else
     if (write_formats.contains("jpg"))
         suffix = ".jpg";
     else if (write_formats.contains("png"))
         suffix = ".png";
     else if (write_formats.contains("bmp"))
         suffix = ".bmp";
-    else if (write_formats.contains("tif"))
-        suffix = ".tif";
+    #endif
     QString temporary_file;
     if (!suffix.isEmpty())
         temporary_file = config_dir + "/wallpaper" + suffix;

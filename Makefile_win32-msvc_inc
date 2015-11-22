@@ -9,6 +9,7 @@ LD_OPT_O=/OUT:
 # http://msdn.microsoft.com/en-us/library/fwkeyyhe%28v=vs.71%29.aspx
 CFLAGS+=-c
 CFLAGS+=-Wall
+CFLAGS+=-std=c++11
 CFLAGS+=-I $(INCDIR)
 CFLAGS+=/Zc:wchar_t-
 

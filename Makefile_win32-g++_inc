@@ -8,6 +8,7 @@ CFLAGS+=-I $(INCDIR)
 CFLAGS+=-Wall
 CFLAGS+=-Werror
 CFLAGS+=-g
+CFLAGS+=-std=c++11
 
 #CFLAGS+="-DCOMPILED_ON=\"`uname -a`\"" #??
 

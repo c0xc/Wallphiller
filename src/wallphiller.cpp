@@ -150,29 +150,8 @@ Wallphiller::Wallphiller()
 
     }
 
-    //Detect desktop environment TODO
-    //Some variables might contain "this-is-deprecated"
-    //More indicators are needed
-    //TODO check XDG_*
-    if (!QString(std::getenv("GNOME_DESKTOP_SESSION_ID")).isEmpty())
-    {
-        _de = DE::Gnome;
-    }
-    else if (!QString(std::getenv("MATE_DESKTOP_SESSION_ID")).isEmpty())
-    {
-        _de = DE::Mate;
-    }
-    else if (!QString(std::getenv("CINNAMON_DESKTOP_SESSION_ID")).isEmpty())
-    {
-        _de = DE::Cinnamon;
-    }
-    else if (QString(std::getenv("XDG_SESSION_DESKTOP")) == "XFCE")
-    {
-        _de = DE::Xfce;
-    }
-    #if defined(_WIN32)
-    _de = DE::Windows;
-    #endif
+    //Detect desktop environment
+    _de = detectDesktopEnvironment();
 
     //Default settings
     foreach (QByteArray f, QImageReader::supportedImageFormats())
@@ -360,6 +339,14 @@ Wallphiller::Wallphiller()
             SIGNAL(activated(QSystemTrayIcon::ActivationReason)),
             SLOT(handleTrayClicked(QSystemTrayIcon::ActivationReason)));
 
+    //Tray icon menu
+    QMenu *tray_menu = new QMenu(this);
+    tray_menu->addAction("Wallphiller")->setEnabled(false);
+    tray_menu->addSeparator();
+    tray_menu->addAction(tr("&Show window"), this, SLOT(showInstance()));
+    tray_menu->addAction(tr("&Quit"), this, SLOT(close()));
+    tray_icon->setContextMenu(tray_menu);
+
     //Restore settings
     QSettings settings;
     Playlist *saved_playlist = 0;
@@ -386,9 +373,13 @@ Wallphiller::Wallphiller()
     if (settings.contains("CacheLimit"))
     {
         int limit = settings.value("CacheLimit").toInt();
-        if (limit < 0) limit = 0;
+        if (limit < 1) limit = 10; //suggest but don't enforce 10 MB
         _configured_thumbnail_cache_limit = limit;
         if (limit) thumbnailbox->setCacheLimit(limit);
+    }
+    else
+    {
+        _configured_thumbnail_cache_limit = 10; //default 10 MB
     }
     if (settings.contains("IntervalValue"))
     {
@@ -470,6 +461,231 @@ Wallphiller::sig(int signal)
 
     Wallphiller *instance = Wallphiller::instanceptr;
     QTimer::singleShot(0, instance, SLOT(close()));
+}
+
+DE
+Wallphiller::detectDesktopEnvironment()
+{
+    DE de = DE::None;
+
+    //How do we detect the current desktop environment?
+    //Short answer: We don't. Because we don't actually "detect", we guess.
+    //(Exception: Windows, Windows is its own DE, so that's always fixed.)
+    //Many popular distributions install and use GDM by default.
+    //If GDM is used, certain environment variables are usually
+    //very good indicators of the running desktop session,
+    //specifically XDG_CURRENT_DESKTOP and GDMSESSION.
+    //If other display managers are used, these variables may not be set.
+    //For example, wdm doesn't set them. 
+
+    //Alternatively, we can walk up the process tree because this process
+    //is probably a (grand-)child of a well known root process
+    //like gnome-session (/usr/bin/gnome-session).
+    //The topmost process that's still owned by this user (then: root)
+    //should usually be ck-launch-session aka ConsoleKit on init systems.
+    //On systemd systems, this gnome-session process would usually be the
+    //topmost process, which should be owned by the dm.
+    //Unfortunately, there are many variations. For example,
+    //in XFCE, the xfce4-session process is not the topmost user process.
+
+    //Platform: Windows
+    #if defined(_WIN32)
+    de = DE::Windows;
+    return de;
+    #endif
+    //Platform: UNIX
+
+    //Process id of this instance
+    //Even though most pids probably fit in an int,
+    //we use a long long int, to be safe. After all, that's what Qt does.
+    qint64 own_pid = QCoreApplication::applicationPid();
+
+    //Walk up the process tree and collect process information
+    QList<QVariantMap> parent_process_list;
+    QStringList parent_process_name_list;
+    for (qint64 current_pid = own_pid; current_pid;)
+    {
+        //Determine parent process id
+        qint64 old_pid = current_pid;
+        {
+            //Regex used to extract pid from output
+            QRegExp rx("^\\s*(\\d+)\\s*$");
+
+            //Run ps
+            QProcess process;
+            QStringList args;
+            args << "o" << "ppid=" << "p" << QString::number(current_pid);
+            process.start("ps", args);
+            if (!process.waitForStarted())
+            {
+                //ps couldn't be executed
+                break;
+            }
+            process.waitForFinished();
+            if (process.exitCode())
+            {
+                //ps call failed
+                break;
+            }
+
+            //ps output may contain leading whitespace(s): " 123"
+            //And a trailing linebreak
+            QString ps_output = process.readAllStandardOutput();
+
+            //Extract numeric id from output using regular expression
+            //Abort on error, no match if stdout empty
+            QString extracted_pid;
+            if (rx.indexIn(ps_output) != -1 && rx.capturedTexts().size() == 2)
+                extracted_pid = rx.capturedTexts().at(1);
+            if (extracted_pid.isEmpty())
+            {
+                //ps output did not contain id (or unrecognized pattern)
+                break;
+            }
+            current_pid = extracted_pid.toLongLong();
+            if (!current_pid)
+            {
+                //Got zero somehow (error converting maybe)
+                break;
+            }
+
+            //Prevent infinite loop
+            if (current_pid == old_pid)
+            {
+                //What just happened
+                break;
+            }
+
+        }
+
+        //Determine process name
+        QString name;
+        {
+            //Run ps
+            QProcess process;
+            QStringList args;
+            args << "o" << "comm=" << "p" << QString::number(current_pid);
+            process.start("ps", args);
+            if (!process.waitForStarted())
+            {
+                //ps couldn't be executed
+                break;
+            }
+            process.waitForFinished();
+            if (process.exitCode())
+            {
+                //ps call failed
+                break;
+            }
+
+            //ps output contains process name
+            QString ps_output = process.readAllStandardOutput();
+
+            //Remove trailing linebreak
+            ps_output.remove(QRegExp("\\n$"));
+
+            //Get name from output
+            name = ps_output;
+
+        }
+
+        //Determine executable path
+        QString exe;
+        {
+            //Resolve exe symlink in proc filesystem
+            //Works for own processes only, not for root
+            QFileInfo fi("/proc/" + QString::number(current_pid) + "/exe");
+            exe = fi.symLinkTarget();
+        }
+
+        //Collect process information
+        QVariantMap info;
+        info["id"] = current_pid;
+        info["name"] = name;
+        info["exe"] = exe;
+        parent_process_list.prepend(info);
+
+    }
+
+    //List names of parent processes
+    foreach (QVariantMap info, parent_process_list)
+    {
+        parent_process_name_list << info["name"].toString();
+    }
+
+    //Detect environment by its session manager process (by name)
+    if (parent_process_name_list.contains("gnome-session"))
+        de = DE::Gnome;
+    else if (parent_process_name_list.contains("mate-session"))
+        de = DE::Mate;
+    else if (parent_process_name_list.contains("cinnamon-session"))
+        de = DE::Cinnamon;
+    else if (parent_process_name_list.contains("xfce4-session"))
+        de = DE::XFCE;
+    else if (parent_process_name_list.contains("lxsession")) //TODO
+        de = DE::LXDE;
+    else if (parent_process_name_list.contains("ksmserver")) //TODO
+        de = DE::KDE;
+
+    //Return result if detection by session manager worked
+    //Should be the most reliable method
+    //See below for a fallback solution
+    if (de != DE::None) return de;
+
+    //Environment variables used for detection (guessing)
+    //If the user manually changes one of these variables
+    //then this user doesn't deserve automatic de recognition.
+    //It may however be a problem if no approproate variable is set,
+    //maybe because someone's uber-simple display manager didn't set any.
+    //GDM should generally set XDG_CURRENT_DESKTOP properly.
+    //Also interesting: DESKTOP_SESSION, GDMSESSION, XDG_DATA_DIRS
+    const QString env_xdg_current_desktop =
+        QString(std::getenv("XDG_CURRENT_DESKTOP"));
+    const QString env_desktop_session =
+        QString(std::getenv("DESKTOP_SESSION"));
+    const QString env_gdmsession =
+        QString(std::getenv("GDMSESSION"));
+    const QString env_xdg_data_dirs =
+        QString(std::getenv("XDG_DATA_DIRS"));
+
+    //Detect desktop environment using environment variables
+    //TODO not all of these values have been verified, double-check!
+    if (!env_xdg_current_desktop.isEmpty())
+    {
+        //XDG_CURRENT_DESKTOP
+        if (env_xdg_current_desktop == "GNOME")
+            de = DE::Gnome;
+        else if (env_xdg_current_desktop == "Unity")
+            de = DE::Gnome;
+        else if (env_xdg_current_desktop == "MATE")
+            de = DE::Mate;
+        else if (env_xdg_current_desktop == "X-Cinnamon")
+            de = DE::Cinnamon;
+        else if (env_xdg_current_desktop == "XFCE")
+            de = DE::XFCE;
+        else if (env_xdg_current_desktop == "LXDE")
+            de = DE::LXDE;
+        else if (env_xdg_current_desktop == "KDE")
+            de = DE::KDE;
+    }
+    else if (!env_gdmsession.isEmpty())
+    {
+        //GDMSESSION
+        if (env_gdmsession.startsWith("gnome"))
+            de = DE::Gnome;
+        else if (env_gdmsession.startsWith("mate"))
+            de = DE::Mate;
+        else if (env_gdmsession == "cinnamon")
+            de = DE::Cinnamon;
+        else if (env_gdmsession == "xfce")
+            de = DE::XFCE;
+        else if (env_gdmsession == "lxde")
+            de = DE::LXDE;
+        else if (env_gdmsession == "kde-plasma")
+            de = DE::KDE;
+    }
+
+    return de;
 }
 
 void
@@ -769,8 +985,16 @@ Wallphiller::showInstance()
 void
 Wallphiller::handleTrayClicked(QSystemTrayIcon::ActivationReason reason)
 {
+    //Just show context menu if requested
+    if (reason == QSystemTrayIcon::Context)
+    {
+        return;
+    }
+
+    //Show window
     showInstance();
     tray_icon->hide();
+
 }
 
 void

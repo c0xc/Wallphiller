@@ -37,11 +37,11 @@ SettingsDialog::SettingsDialog(QWidget *parent)
         auto_title_info = "KDE";
         break;
 
-        case DE::Xfce:
+        case DE::XFCE:
         auto_title_info = "Xfce";
         break;
 
-        case DE::Lxde:
+        case DE::LXDE:
         auto_title_info = "Lxde";
         break;
 

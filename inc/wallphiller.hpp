@@ -54,6 +54,10 @@
 #include <QSystemTrayIcon>
 #include <QSpinBox>
 #include <QFormLayout>
+#include <QProcess>
+#include <QRegExp>
+#include <QMap>
+#include <QHash>
 
 #include "version.hpp"
 
@@ -66,10 +70,10 @@ enum class DE
     None,
     Gnome,
     Mate,
-    KDE,
     Cinnamon,
-    Xfce,
-    Lxde,
+    XFCE,
+    LXDE,
+    KDE,
     Windows
 };
 
@@ -93,6 +97,9 @@ private:
 
     static void
     sig(int signal);
+
+    static DE
+    detectDesktopEnvironment();
 
     QSharedMemory
     shared_memory;

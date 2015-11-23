@@ -4,7 +4,7 @@ Wallphiller
 This tool can change your wallpaper at certain intervals.
 
 Several desktop environments are supported.
-Gnome. Mate and Cinnamon are all supported.
+Gnome. Mate, Cinnamon and LXDE are all supported.
 Support for Windows has been added as well.
 For other environments, a custom command can be defined.
 

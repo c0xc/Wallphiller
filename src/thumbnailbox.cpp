@@ -1195,7 +1195,7 @@ ThumbnailBox::setList(const QStringList &paths, int selected, SourceType type)
     setEnabled(true);
 
     //Draw thumbnails
-    updateThumbnails();
+    scheduleUpdateThumbnails(0);
 
     //Emit selection signal
     emit selectionChanged();
@@ -1254,7 +1254,7 @@ ThumbnailBox::setList(const QStringList &remote_paths,
     setEnabled(true);
 
     //Draw thumbnails
-    updateThumbnails();
+    scheduleUpdateThumbnails(0);
 
     //Emit selection signal
     emit selectionChanged();

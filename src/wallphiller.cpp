@@ -622,15 +622,20 @@ Wallphiller::detectDesktopEnvironment()
         de = DE::Cinnamon;
     else if (parent_process_name_list.contains("xfce4-session"))
         de = DE::XFCE;
-    else if (parent_process_name_list.contains("lxsession")) //TODO
+    else if (parent_process_name_list.contains("lxsession"))
         de = DE::LXDE;
-    else if (parent_process_name_list.contains("ksmserver")) //TODO
+    else if (parent_process_name_list.contains("ksmserver"))
+        de = DE::KDE;
+    else if (parent_process_name_list.contains("kdeinit5"))
         de = DE::KDE;
 
     //Return result if detection by session manager worked
     //Should be the most reliable method
     //See below for a fallback solution
     if (de != DE::None) return de;
+
+    //TODO try to detect even if parent is orphaned?
+    //lxsession can't be detected if it's not a parent process
 
     //Environment variables used for detection (guessing)
     //If the user manually changes one of these variables
@@ -1361,15 +1366,18 @@ Wallphiller::setWallpaper(const QString &file_path)
         break;
 
         case DE::Mate:
-        cmd = "gsettings set org.mate.desktop.background picture-uri \%u";
+        cmd = "gsettings set org.mate.background picture-filename \%f";
         break;
 
         case DE::Cinnamon:
         cmd = "gsettings set org.cinnamon.desktop.background picture-uri \%u";
         break;
 
+        case DE::LXDE:
+        cmd = "pcmanfm --set-wallpaper \%f";
+        break;
+
         //TODO XFCE
-        //TODO LXDE
         //TODO KDE
 
         case DE::Windows:

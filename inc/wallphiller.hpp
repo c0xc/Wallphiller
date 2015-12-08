@@ -86,7 +86,7 @@ class Wallphiller : public QMainWindow
     
 public:
 
-    Wallphiller();
+    Wallphiller(QWidget *parent = 0, Qt::WindowFlags flags = 0);
 
     ~Wallphiller();
 
@@ -103,6 +103,9 @@ private:
 
     QSharedMemory
     shared_memory;
+
+    bool
+    dont_touch_config;
 
     QTimer
     *tmr_check_shared_memory;

@@ -3,8 +3,10 @@
 
 Wallphiller* Wallphiller::instanceptr = 0;
 
-Wallphiller::Wallphiller()
-           : shared_memory("WALLPHILLER_INSTANCE"),
+Wallphiller::Wallphiller(QWidget *parent, Qt::WindowFlags flags)
+           : QMainWindow(parent, flags),
+             shared_memory("WALLPHILLER_INSTANCE"),
+             dont_touch_config(false),
              tmr_check_shared_memory(0),
              _configured_interval_value(0),
              _configured_thumbnail_cache_limit(0),
@@ -118,6 +120,9 @@ Wallphiller::Wallphiller()
 
             //Explicitly detach (just to make it obvious that we're done)
             shared_memory.detach();
+
+            //Prevent this instance from breaking config
+            dont_touch_config = true;
 
             //Terminate
             QTimer::singleShot(0, this, SLOT(close()));
@@ -389,6 +394,12 @@ Wallphiller::Wallphiller()
         QString unit =settings.value("IntervalUnit").toString(); 
         _configured_interval_unit = unit;
     }
+    else
+    {
+        //Default interval of 5 minutes
+        _configured_interval_value = 5;
+        _configured_interval_unit = "MINUTES";
+    }
 
     //Start minimized to tray if requested
     //Also starting minimized if last instance was stopped minimized
@@ -635,7 +646,10 @@ Wallphiller::detectDesktopEnvironment()
     if (de != DE::None) return de;
 
     //TODO try to detect even if parent is orphaned?
-    //lxsession can't be detected if it's not a parent process
+    //lxsession can't be detected if it's not a parent process!
+    //This happens so often that we fall back to checking environment
+    //variables way too often.
+    //TODO ps: ps -u $UID -o comm=
 
     //Environment variables used for detection (guessing)
     //If the user manually changes one of these variables
@@ -743,14 +757,11 @@ Wallphiller::setPlaylistMenu()
 void
 Wallphiller::closeEvent(QCloseEvent *event)
 {
-    //Save settings ONLY if playlist defined
-    //It should generally be possible for the user to remove the config file
-    //as well as temporary files, including the config directory itself.
+    //TODO IDEA clear config mode (including config dir)
     //Simply starting this program without doing anything
     //should not leave any traces on the system.
-    bool is_playlist = playlist();
     QStringList current_list = sortedAddresses();
-    bool save_settings = is_playlist;
+    bool save_settings = !dont_touch_config;
     if (save_settings)
     {
         //Save settings
@@ -774,16 +785,7 @@ Wallphiller::closeEvent(QCloseEvent *event)
     }
     else
     {
-        //TODO delete config if no playlist selected? -> SettingsDialog...
-
-        //Settings
-        QSettings settings;
-
-        //Clear settings
-        settings.clear(); //TODO not sure if this is good
-
-        //TODO also delete config directory...?
-
+        //Don't touch config
     }
 
     //Call base implementation
@@ -1202,11 +1204,11 @@ Wallphiller::createPlaylistWithFullDirectory(bool empty)
 {
     //Ask for directory
     QStringList formats = this->formatFilters();
-    QString pwd;
+    QString dir = QDir::home().path();
     QString path;
     path = QFileDialog::getExistingDirectory(this,
         tr("Select wallpaper directory"),
-        pwd,
+        dir,
         QFileDialog::ShowDirsOnly | QFileDialog::DontResolveSymlinks);
     if (path.isEmpty()) return; //abort
 
@@ -1232,11 +1234,11 @@ Wallphiller::createPlaylistWithShallowDirectory(bool empty)
 {
     //Ask for directory
     QStringList formats = this->formatFilters();
-    QString pwd;
+    QString dir = QDir::home().path();
     QString path;
     path = QFileDialog::getExistingDirectory(this,
         tr("Select wallpaper directory"),
-        pwd,
+        dir,
         QFileDialog::ShowDirsOnly | QFileDialog::DontResolveSymlinks);
     if (path.isEmpty()) return; //abort
 
@@ -1262,14 +1264,14 @@ Wallphiller::createPlaylistWithFiles(bool empty)
 {
     //Ask for picture files
     QStringList formats = this->formatFilters();
-    QString pwd;
+    QString dir = QDir::home().path();
     QStringList files;
     QString filter = QString("%1 (%2)").
         arg(tr("Images")).
         arg(formats.join(" "));
     files = QFileDialog::getOpenFileNames(this,
         tr("Select wallpaper files"),
-        pwd,
+        dir,
         filter,
         0,
         QFileDialog::DontResolveSymlinks);

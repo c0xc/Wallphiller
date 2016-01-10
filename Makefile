@@ -42,11 +42,11 @@ OBJECTS_QT=$(SOURCES:%.cpp=$(OBJDIR)/%.moc.obj)
 CMD_LINK_OLD=$(LD) $(OBJECTS) $(OBJECTS_QT) $(LDFLAGS_QT) $(LDFLAGS) $(LD_OPT_O)$(EXECUTABLE)
 CMD_LINK=$(strip $(CMD_LINK_OLD))
 
-rebuild: clean compile link clean-moc
+rebuild: clean compile link
 
 build: compile link
 
-compile: $(OBJDIR) $(VERSIONFILE) $(HEADERS) $(OBJECTS) $(OBJECTS_QT)
+compile: $(OBJDIR) $(VERSIONFILE) $(HEADERS) $(OBJECTS) $(OBJECTS_QT) clean-moc
 
 $(OBJDIR):
 	mkdir $@

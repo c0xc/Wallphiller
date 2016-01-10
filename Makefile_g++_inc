@@ -12,7 +12,6 @@ CFLAGS+=-rdynamic
 CFLAGS+=-ggdb
 CFLAGS+=-std=c++11
 
-
 CFLAGS+="-DCOMPILED_ON=\"`uname -a`\""
 
 QTDIR?=/usr/include
@@ -24,11 +23,5 @@ CFLAGS_QT+=-I $(QTDIR)/include/QtCore
 # LINKER
 
 LDFLAGS_QT=-L$(QTDIR)/lib -lQtGui -lQtCore
-LDFLAGS_QT_STATIC="$QTDIR_STATIC/lib/*.a" -lXext -lX11 -pthread -lrt -lgobject-2.0 -lgthread-2.0 -lglib-2.0 -ldl -lz -lXft -lfreetype -lSM -lICE -lXrender -lfontconfig -ljpeg -pthread
-#MOC=moc-qt4
 MOC=$(QTDIR)/bin/moc
-
-# MISC
-
-CMD_VERSION=cp $(VERSIONFILE0) $(VERSIONFILE)
 

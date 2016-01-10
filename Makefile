@@ -9,7 +9,7 @@ SUBDIR=sub
 CC_OPT_O=-o 
 LD_OPT_O=$(CC_OPT_O)
 
-VERSIONFILE0=$(INCDIR)/.0.version.hpp
+VERSIONFILE_DEFAULT=$(INCDIR)/version.hpp.default
 VERSIONFILE=$(INCDIR)/version.hpp
 
 EXECUTABLE=$(BINDIR)/$(PROGRAM)
@@ -22,7 +22,6 @@ CFLAGS+="-DPROGRAM=\"$(PROGRAM)\""
 CFLAGS+=$(CFLAGS_QT)
 CFLAGS+=$(ADDCFLAGS)
 
-#LDFLAGS+=$(LDFLAGS_BOOST)
 LDFLAGS+=$(LDFLAGS_READLINE)
 LDFLAGS+=$(ADDLDFLAGS)
 
@@ -47,15 +46,16 @@ rebuild: clean compile link clean-moc
 
 build: compile link
 
-build-static: compile-static link-static
-
-compile: $(OBJDIR) $(HEADERS) $(OBJECTS) $(OBJECTS_QT) $(VERSIONFILE)
+compile: $(OBJDIR) $(VERSIONFILE) $(HEADERS) $(OBJECTS) $(OBJECTS_QT)
 
 $(OBJDIR):
 	mkdir $@
 
 $(BINDIR):
 	mkdir $@
+
+$(VERSIONFILE): $(VERSIONFILE_DEFAULT)
+	cp $< $@
 
 $(INCDIR)/thumbnailbox.hpp: $(SUBDIR)/thumbnailbox/$(INCDIR)/thumbnailbox.hpp
 	cp $< $@
@@ -78,9 +78,6 @@ $(EXECUTABLE): link
 
 link: $(BINDIR) $(OBJECTS) $(OBJECTS_QT)
 	$(LD) $(OBJECTS) $(OBJECTS_QT) $(LDFLAGS) $(LDFLAGS_QT) $(LD_OPT_O)$(EXECUTABLE)
-
-link-static: $(OBJECTS) $(OBJECTS_QT)
-	$(LD) $(OBJECTS) $(OBJECTS_QT) $(LDFLAGS) $(LDFLAGS_QT_STATIC) $(CC_OPT_O)$(EXECUTABLE)
 
 clean:
 ifeq ($(CMD_CLEAN),)

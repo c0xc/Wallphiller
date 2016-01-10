@@ -10,9 +10,8 @@ CFLAGS+=-Werror
 CFLAGS+=-g
 CFLAGS+=-std=c++11
 
-#CFLAGS+="-DCOMPILED_ON=\"`uname -a`\"" #??
+#CFLAGS+="-DCOMPILED_ON=\"...\""
 
-#QT_BASEDIR=D:\Qt\4.8.1
 QT_BASEDIR=%QTDIR%
 CFLAGS_QT+=-I $(QT_BASEDIR)\include
 CFLAGS_QT+=-I $(QT_BASEDIR)\include\QtGui
@@ -22,12 +21,9 @@ CFLAGS_QT+=-I $(QT_BASEDIR)\include\QtCore
 
 LDFLAGS_QT="$(QT_BASEDIR)\lib\libQtCore4.a" "$(QT_BASEDIR)\lib\libQtGui4.a"
 LDFLAGS_QT+=-Wl,-subsystem,windows
-LDFLAGS_QT_STATIC=-static
 MOC="$(QT_BASEDIR)\bin\moc.exe"
 
 # MISC
-
-CMD_VERSION=copy $(VERSIONFILE0) $(VERSIONFILE)
 
 CMD_CLEAN=-del "$(OBJDIR)\*.o" "$(OBJDIR)\*.obj" "$(SRCDIR)\*.moc.cpp"
 

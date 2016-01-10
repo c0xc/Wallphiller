@@ -38,10 +38,25 @@ if the user wants to see a new wallpaper everytime he/she logs in.
 
 
 
+Git
+---
+
+After cloning the repository...
+
+    $ git clone ...
+
+... you'll want to get the submodule.
+
+    $ git submodule update
+
+After this, you can go ahead and start a build.
+
+
+
 Build
 -----
 
-This software requires Qt 4.8.
+This software requires Qt 4.
 Make sure that the QTDIR environment variable points
 to your Qt build directory.
 
@@ -49,13 +64,13 @@ Default build:
 
     $ make
 
+Cleanup:
+
+    $ make clean
+
 Windows build:
 
     $ make PLATFORM=win32-g++
-
-Clean up:
-
-    $ make clean
 
 
 
@@ -88,7 +103,7 @@ everytime you log in.
 Resources
 ---------
 
-A working resource file is included (res/res.src).
+A resource file is included (res/res.src).
 It is accessed as src/res.cpp, which is a symlink pointing to that file.
 It's not necessary to regenerate this file.
 
